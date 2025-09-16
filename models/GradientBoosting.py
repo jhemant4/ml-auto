@@ -2,7 +2,7 @@ import streamlit as st
 from sklearn.ensemble import GradientBoostingClassifier
 
 
-def gb_param_selector():
+def gb_param_selector(prefix="gb"):
     learning_rate = st.slider("learning_rate", 0.001, 0.5, 0.1, 0.005)
     n_estimators = st.number_input("n_estimators", 10, 500, 100, 10)
     max_depth = st.number_input("max_depth", 3, 30, 3, 1)

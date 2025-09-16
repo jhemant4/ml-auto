@@ -2,7 +2,7 @@ import streamlit as st
 from sklearn.ensemble import RandomForestClassifier
 
 
-def rf_param_selector():
+def rf_param_selector(prefix="rf"):
 
     criterion = st.selectbox("criterion", ["gini", "entropy"])
     n_estimators = st.number_input("n_estimators", 50, 300, 100, 10)

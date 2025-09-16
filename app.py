@@ -1,5 +1,13 @@
 import numpy as np
 import streamlit as st
+import pandas as pd
+from sklearn.model_selection import train_test_split
+
+
+st.set_page_config(
+    page_title="Playground", layout="wide", page_icon="./images/flask.png"
+)
+
 from utils.functions import (
     add_polynomial_features,
     generate_data,
@@ -18,19 +26,28 @@ from utils.ui import (
     model_selector,
 )
 
-st.set_page_config(
-    page_title="Playground", layout="wide", page_icon="./images/flask.png"
-)
-
 
 def sidebar_controllers():
+    
+    # Add dataset choice (only Toy Dataset now)
+    st.sidebar.header("Dataset")
+    dataset_option = st.sidebar.radio(
+        "Select Dataset Type",
+        ("Toy Dataset",)
+    )
+
+    # Only Toy Dataset supported
     dataset, n_samples, train_noise, test_noise, n_classes = dataset_selector()
-    model_type, model = model_selector()
     x_train, y_train, x_test, y_test = generate_data(
         dataset, n_samples, train_noise, test_noise, n_classes
     )
+
+    # ✅ Always call model_selector
+    model_type, model = model_selector()
+
+    # Feature engineering
     st.sidebar.header("Feature engineering")
-    degree = polynomial_degree_selector()
+    degree = polynomial_degree_selector() or 1   # safe default
     footer()
 
     return (
@@ -53,7 +70,7 @@ def body(
     x_train, x_test, y_train, y_test, degree, model, model_type, train_noise, test_noise
 ):
     introduction()
-    col1, col2 = st.beta_columns((1, 1))
+    col1, col2 = st.columns((1, 1))
 
     with col1:
         plot_placeholder = st.empty()

@@ -2,7 +2,7 @@ import streamlit as st
 from sklearn.tree import DecisionTreeClassifier
 
 
-def dt_param_selector():
+def dt_param_selector(prefix="dt"):
 
     criterion = st.selectbox("criterion", ["gini", "entropy"])
     max_depth = st.number_input("max_depth", 1, 50, 5, 1)

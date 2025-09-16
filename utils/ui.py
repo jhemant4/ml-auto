@@ -16,7 +16,7 @@ from utils.functions import img_to_bytes
 
 
 def introduction():
-    st.title("**Welcome to playground 🧪**")
+    st.title("**Welcome to Hemant's ML automation 🧪**")
     st.subheader(
         """
         This is a place where you can get familiar with machine learning models directly from your browser
@@ -35,7 +35,7 @@ def introduction():
 
 
 def dataset_selector():
-    dataset_container = st.sidebar.beta_expander("Configure a dataset", True)
+    dataset_container = st.sidebar.expander("Configure a dataset", True)
     with dataset_container:
         dataset = st.selectbox("Choose a dataset", ("moons", "circles", "blobs"))
         n_samples = st.number_input(
@@ -68,9 +68,13 @@ def dataset_selector():
 
     return dataset, n_samples, train_noise, test_noise, n_classes
 
-
 def model_selector():
-    model_training_container = st.sidebar.beta_expander("Train a model", True)
+    model_training_container = st.sidebar.expander("Train a model", expanded=True)
+
+    # ✅ Safe defaults
+    # model_type = "Logistic Regression"
+    # model = lr_param_selector(prefix="lr")
+
     with model_training_container:
         model_type = st.selectbox(
             "Choose a model",
@@ -84,33 +88,34 @@ def model_selector():
                 "Gaussian Naive Bayes",
                 "SVC",
             ),
+            index=0
         )
 
         if model_type == "Logistic Regression":
-            model = lr_param_selector()
+            model = lr_param_selector(prefix="lr")
 
         elif model_type == "Decision Tree":
-            model = dt_param_selector()
+            model = dt_param_selector(prefix="dt")
 
         elif model_type == "Random Forest":
-            model = rf_param_selector()
+            model = rf_param_selector(prefix="rf")
 
         elif model_type == "Neural Network":
-            model = nn_param_selector()
+            model = nn_param_selector(prefix="nn")
 
         elif model_type == "K Nearest Neighbors":
-            model = knn_param_selector()
+            model = knn_param_selector(prefix="knn")
 
         elif model_type == "Gaussian Naive Bayes":
-            model = nb_param_selector()
+            model = nb_param_selector(prefix="nb")
 
         elif model_type == "SVC":
-            model = svc_param_selector()
+            model = svc_param_selector(prefix="svc")
 
         elif model_type == "Gradient Boosting":
-            model = gb_param_selector()
+            model = gb_param_selector(prefix="gb")
 
-    return model_type, model
+    return model_type, model or LogisticRegression(prefix="lr")
 
 
 def generate_snippet(
@@ -173,7 +178,7 @@ def footer():
     st.sidebar.markdown("---")
     st.sidebar.markdown(
         """
-        [<img src='data:image/png;base64,{}' class='img-fluid' width=25 height=25>](https://github.com/ahmedbesbes/playground) <small> Playground 0.1.0 | April 2021</small>""".format(
+        [<img src='data:image/png;base64,{}' class='img-fluid' width=25 height=25>](https://github.com/hemantoxx) <small> Playground 0.1.0 | Sept 2025</small>""".format(
             img_to_bytes("./images/github.png")
         ),
         unsafe_allow_html=True,

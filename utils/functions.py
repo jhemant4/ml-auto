@@ -19,14 +19,16 @@ def local_css(file_name):
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 
-@st.cache(suppress_st_warning=True, allow_output_mutation=True, show_spinner=True)
+@st.cache_data(show_spinner=True)
 def generate_data(dataset, n_samples, train_noise, test_noise, n_classes):
     if dataset == "moons":
         x_train, y_train = make_moons(n_samples=n_samples, noise=train_noise)
         x_test, y_test = make_moons(n_samples=n_samples, noise=test_noise)
+
     elif dataset == "circles":
         x_train, y_train = make_circles(n_samples=n_samples, noise=train_noise)
         x_test, y_test = make_circles(n_samples=n_samples, noise=test_noise)
+
     elif dataset == "blobs":
         x_train, y_train = make_blobs(
             n_features=2,
@@ -45,10 +47,10 @@ def generate_data(dataset, n_samples, train_noise, test_noise, n_classes):
 
         scaler = StandardScaler()
         x_train = scaler.fit_transform(x_train)
-
         x_test = scaler.transform(x_test)
 
     return x_train, y_train, x_test, y_test
+
 
 
 def plot_decision_boundary_and_metrics(
@@ -187,12 +189,16 @@ def get_model_tips(model_type):
 
 
 def get_model_url(model_type):
-    model_url = model_urls[model_type]
+    model_url = model_urls.get(model_type, "No URL available")
     text = f"**Link to scikit-learn official documentation [here]({model_url}) 💻 **"
     return text
 
 
 def add_polynomial_features(x_train, x_test, degree):
+    # if no polynomial degree or only degree=1 → return data unchanged
+    if degree is None or degree < 2:
+        return x_train, x_test
+
     for d in range(2, degree + 1):
         x_train = np.concatenate(
             (
