@@ -1,900 +1,1073 @@
-/**
- * MedicalTracker.jsx  —  v5
- * Changes from v4:
- *  1. Customer records table shows ALL 24 columns
- *  2. Removed "Branch completion rate" card; replaced with TPA breakdown chart
- *  3. Dynamic aging buckets built from actual min/max of the Ageing column (10-day buckets)
- *  4. Added Pivot page: two pivot tables matching the Excel screenshots
- *     - Pivot 1: Zone > GEO > TPA Name | Count | SumAssured (Crs) | Premium (Crs)
- *     - Pivot 2: Ageing bucket | Count | SumAssured (Crs) | Premium (Crs)
- *     Both with Disposition + Final Status slicer filters
- */
-
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useRef, useCallback, useMemo } from "react";
 import * as XLSX from "xlsx";
-import {
-  PieChart, Pie, Cell, BarChart, Bar,
-  XAxis, YAxis, Tooltip, ResponsiveContainer, Legend,
-} from "recharts";
 
-/* ─── Column name map ─────────────────────────────────────────────────── */
-const COL_MAP = {
-  "date"                          : "date",
-  "tpa app no"                    : "tpaApplicationNo",
-  "tpa app number"                : "tpaApplicationNo",
-  "tpa application no"            : "tpaApplicationNo",
-  "tpa application number"        : "tpaApplicationNo",
-  "tpaapplicationnumber"          : "tpaApplicationNo",
-  "tpaapplicationno"              : "tpaApplicationNo",
-  "loan no"                       : "loanNumber",
-  "loan number"                   : "loanNumber",
-  "loannumber"                    : "loanNumber",
-  "policy#"                       : "policy",
-  "policy"                        : "policy",
-  "policy no"                     : "policy",
-  "policy no."                    : "policy",
-  "policy number"                 : "policy",
-  "name of the life assured"      : "nameOfLifeAssured",
-  "name of life assured"          : "nameOfLifeAssured",
-  "life assured name"             : "nameOfLifeAssured",
-  "assured name"                  : "nameOfLifeAssured",
-  "testcategory"                  : "testCategory",
-  "test category"                 : "testCategory",
-  "test categories"               : "testCategory",
-  "tests"                         : "testCategory",
-  "premium"                       : "premium",
-  "sumassured"                    : "sumAssured",
-  "sum assured"                   : "sumAssured",
-  "age"                           : "age",
-  "product type"                  : "productType",
-  "producttype"                   : "productType",
-  "medical type"                  : "medicalType",
-  "medicaltype"                   : "medicalType",
-  "med type"                      : "medicalType",
-  "tpa name"                      : "tpaName",
-  "tpaname"                       : "tpaName",
-  "gender"                        : "gender",
-  "sub status"                    : "substatus",
-  "substatus"                     : "substatus",
-  "sub-status"                    : "substatus",
-  "appointment date"              : "appointmentDate",
-  "appointment data"              : "appointmentDate",
-  "appt date"                     : "appointmentDate",
-  "appt. date"                    : "appointmentDate",
-  "appointmentdate"               : "appointmentDate",
-  "final status"                  : "finalStatus",
-  "finalstatus"                   : "finalStatus",
-  "aging"                         : "aging",
-  "ageing"                        : "aging",
-  "branch"                        : "branch",
-  "customer contact no"           : "customerContact",
-  "customer contact number"       : "customerContact",
-  "customer contact"              : "customerContact",
-  "contact number"                : "customerContact",
-  "contact no"                    : "customerContact",
-  "zone"                          : "zone",
-  "state"                         : "state",
-  "geo"                           : "geo",
-  "disposition"                   : "disposition",
-  "date (disposition date)"       : "dispositionDate",
-  "disposition date"              : "dispositionDate",
-  "dispositiondate"               : "dispositionDate",
-  "timestamp"                     : "timestamp",
-};
+const REQUIRED_COLS = [
+  "Loan Number","ID","Product Type","Refer to Credit Central","Sub Product Type","Product Category","Product Line",
+  "UBL Login Flag","UBL Product Line","Dept","MLAP Segment","MSME Type","HL Type","Samarthya","Gruh Setu Flag",
+  "Chq Cancelled Flag","Cover Type","Gruh Pravesh","Stage","CC Stage","DISB_STAGE","Real Stage",
+  "Lead Created Date","Pre Login Date","Query Raise Date","Login Fee","Decision Date","Login Date",
+  "Loan Sanction Date","Loan Requested Amt","First Sanctioned Date","Sanctioned Amt","Sanctioned Amt With LI GI",
+  "First LD Gen Date","Handover Date","Handover Seq","Handover Amt","Payment Seq","Payment Type",
+  "Disb Date","Disb Amt","Disbursed Excluding INBT","Disb ROI","Yield","Disb Seq","Fin Is Active",
+  "PF Amt","PF Amt on Lan Gen","LMS PF Amt","LMS PF Amt GST","LOS PF Amt WT GST","LOS PF Amt",
+  "LI Amt","LI Sum Assured","LI Varient","LI Policy Period In Months","GI Amt","Sourcing DST ID","DST ID",
+  "Employee Code","Credit Code","Name","Designation","Department","Sub Department","Reporting Manager",
+  "RM ID","Sales Manager ID","Current Manager","legal Entity","Channel Partner Code","Channel Partner Account Name",
+  "Partner Type CP","Channel Partner Type","Channel Partner","VLE Name","VLE District","VLE State",
+  "Lead Source","Lead Sub Source","BRANCH_CODE","Branch","COUNTRY","Zone","Geo","Cluster","City","City Tier",
+  "State","Branch Phase","Branch Tier","Actual ROI","Loan Channel","Score Ventile","Sanctioned Loan Tenure",
+  "Sanctioned ROI","Vertical","Status","SOR Source System","Product Campaign","Product Category","Product Variant",
+  "Product Category Mudra","Sammaan Flag","Subsequent Tranch Count","Sales DID Date","PSL","LWD","LI GI Amt",
+  "Last LD Generation Date","Last DCM Date","FOIR","First Disb Date","Data Source","Customer Entity","Program",
+  "Transaction Sub Type","Customer Profile","IS APF","Early","Loan Info Sub Product Type",
+  "Collateral Property Type","Property Sub Type","Platinum Loan Flag","Mitra Flag","Saathi Flag","Aarambh HL"
+];
 
-const NUMERIC_FIELDS = new Set(["premium", "sumAssured", "aging", "age"]);
-const EXACT_ONLY_KEYS = new Set(["age", "geo", "date", "zone", "state", "branch", "gender", "premium", "policy", "tests"]);
+const FILTER_FIELDS = ["Zone","Geo","State","Branch","Vertical","Product Type","Product Line","Channel Partner","Lead Source","Status"];
 
-function cleanHeader(raw) {
-  return String(raw).replace(/^\uFEFF/, "").toLowerCase().trim();
+function Badge({ children, color = "blue" }) {
+  const colors = {
+    blue: { bg: "#E6F1FB", text: "#185FA5", border: "#B5D4F4" },
+    green: { bg: "#EAF3DE", text: "#3B6D11", border: "#C0DD97" },
+    amber: { bg: "#FAEEDA", text: "#854F0B", border: "#FAC775" },
+    purple: { bg: "#EEEDFE", text: "#534AB7", border: "#CECBF6" },
+    teal: { bg: "#E1F5EE", text: "#0F6E56", border: "#9FE1CB" },
+  };
+  const c = colors[color] || colors.blue;
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      background: c.bg, color: c.text, border: `0.5px solid ${c.border}`,
+      borderRadius: 6, fontSize: 11, fontWeight: 500, padding: "2px 8px",
+      letterSpacing: "0.01em"
+    }}>{children}</span>
+  );
 }
 
-function mapHeader(raw) {
-  const key = cleanHeader(raw);
-  if (!key) return null;
-  if (COL_MAP[key] !== undefined) return COL_MAP[key];
-  if (!EXACT_ONLY_KEYS.has(key)) {
-    for (const [pattern, field] of Object.entries(COL_MAP)) {
-      if (EXACT_ONLY_KEYS.has(pattern)) continue;
-      if (pattern.length >= 8 && key.includes(pattern)) return field;
-      if (pattern.length >= 8 && pattern.includes(key)) return field;
-    }
-  }
-  return null;
+function MetricCard({ label, value, sub, color = "#185FA5" }) {
+  return (
+    <div style={{
+      background: "var(--color-background-secondary)",
+      borderRadius: 10, padding: "14px 16px",
+      display: "flex", flexDirection: "column", gap: 4,
+      minWidth: 0
+    }}>
+      <span style={{ fontSize: 11, color: "var(--color-text-secondary)", fontWeight: 500, letterSpacing: "0.04em", textTransform: "uppercase" }}>{label}</span>
+      <span style={{ fontSize: 22, fontWeight: 600, color, lineHeight: 1.1 }}>{value}</span>
+      {sub && <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{sub}</span>}
+    </div>
+  );
 }
 
-function findHeaderRow(rows) {
-  for (let i = 0; i < Math.min(rows.length, 10); i++) {
-    const matched = rows[i].filter(cell => mapHeader(cell) !== null).length;
-    if (matched >= 2) return i;
-  }
-  return 0;
-}
+export default function YieldDashboard() {
+  const [rawData, setRawData] = useState([]);
+  const [columns, setColumns] = useState([]);
+  const [fileName, setFileName] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [tab, setTab] = useState("preview"); // preview | yield
+  const [filters, setFilters] = useState({});
+  const [filterSearch, setFilterSearch] = useState({});
+  const [page, setPage] = useState(1);
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef();
+  const ROWS_PER_PAGE = 50;
 
-function normaliseFinalStatus(raw) {
-  if (!raw) return "";
-  const s = String(raw).toLowerCase().trim();
-  if (s.includes("complet")) return "completed";
-  if (s.includes("not contact") || s.includes("non contact") || s.includes("not reachable") ||
-      s.includes("not answer") || s.includes("no response") || s.includes("not respond") ||
-      s.includes("contactable")) return "non contactable";
-  if (s.includes("reschedul")) return "rescheduled";
-  if (s.includes("pending") || s.includes("schedul") || s.includes("process")) return "pending";
-  return s;
-}
-
-function parseExcel(file) {
-  return new Promise((resolve, reject) => {
+  const processFile = useCallback((file) => {
+    if (!file) return;
+    setLoading(true);
+    setFileName(file.name);
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
         const wb = XLSX.read(e.target.result, { type: "array", cellDates: true });
         const ws = wb.Sheets[wb.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-        if (rows.length < 2) return resolve({ data: [], debug: { headerRow: 0, mappedHeaders: [] } });
-        const headerRowIdx = findHeaderRow(rows);
-        const rawHeaders = rows[headerRowIdx];
-        const headers = rawHeaders.map(mapHeader);
-        const mappedHeaders = rawHeaders.map((h, i) => ({
-          raw: String(h), mapped: headers[i] || "— unmapped —", ok: !!headers[i],
-        }));
-        const data = rows.slice(headerRowIdx + 1)
-          .filter(row => row.some(cell => cell !== "" && cell !== null && cell !== undefined))
-          .map(row => {
-            const obj = {};
-            headers.forEach((key, i) => {
-              if (!key) return;
-              let val = row[i];
-              if (NUMERIC_FIELDS.has(key)) val = parseFloat(String(val).replace(/,/g, "")) || 0;
-              if (val instanceof Date) val = val.toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "2-digit" });
-              obj[key] = (val === null || val === undefined) ? "" : val;
-            });
-            if (obj.finalStatus !== undefined) obj.finalStatus = normaliseFinalStatus(obj.finalStatus);
-            return obj;
-          });
-        resolve({ data, debug: { headerRow: headerRowIdx, mappedHeaders } });
-      } catch (err) { reject(err); }
+        const raw = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        if (raw.length === 0) { setLoading(false); return; }
+        // Normalize all column names: trim spaces
+        const normalized = raw.map(row => {
+          const clean = {};
+          Object.keys(row).forEach(k => { clean[k.trim()] = row[k]; });
+          return clean;
+        });
+        const cols = Object.keys(normalized[0]);
+        setColumns(cols);
+        setRawData(normalized);
+        setFilters({});
+        setPage(1);
+        setTab("preview");
+      } catch (err) { console.error(err); }
+      setLoading(false);
     };
-    reader.onerror = reject;
     reader.readAsArrayBuffer(file);
-  });
-}
-
-/* ─── Palette ─────────────────────────────────────────────────────────── */
-const STATUS_COLOR = {
-  "completed"       : { bg: "#eaf8f0", color: "#1a6b42", dot: "#27a06b" },
-  "pending"         : { bg: "#fef5e4", color: "#7d4e05", dot: "#d4870f" },
-  "non contactable" : { bg: "#fdecea", color: "#7a1f1f", dot: "#c0392b" },
-  "rescheduled"     : { bg: "#e8f2fc", color: "#0d3f73", dot: "#2471b8" },
-};
-const DISP_COLORS = ["#27a06b","#2471b8","#c0392b","#d4870f","#7c5cbf","#e07b39","#666"];
-const AGING_COLORS_ARR = ["#27a06b","#4aab7a","#8bc34a","#ffc107","#ff9800","#f44336","#9c27b0","#e91e63","#795548","#607d8b"];
-
-const agingColor = (d) => d >= 60 ? "#c0392b" : d >= 30 ? "#d4870f" : "#27a06b";
-const fmtPrem = (n) => {
-  if (!n || isNaN(n)) return "—";
-  return n >= 100000 ? `₹${(n / 100000).toFixed(1)}L` : `₹${(n / 1000).toFixed(0)}K`;
-};
-const toCrs = (n) => {
-  if (!n || isNaN(n)) return "0.00";
-  return (n / 10000000).toFixed(2);
-};
-
-/* ─── Dynamic aging buckets ───────────────────────────────────────────── */
-function buildAgingBuckets(data, bucketSize = 10) {
-  const ages = data.map(r => r.aging).filter(a => typeof a === "number" && !isNaN(a));
-  if (!ages.length) return [];
-  const minAge = Math.floor(Math.min(...ages) / bucketSize) * bucketSize;
-  const maxAge = Math.ceil(Math.max(...ages) / bucketSize) * bucketSize;
-  const buckets = [];
-  for (let lo = minAge; lo < maxAge; lo += bucketSize) {
-    const hi = lo + bucketSize - 1;
-    const label = `${lo}-${hi}`;
-    const items = data.filter(r => r.aging >= lo && r.aging <= hi);
-    buckets.push({
-      name: label, value: items.length,
-      sumAssured: items.reduce((s, r) => s + (r.sumAssured || 0), 0),
-      premium: items.reduce((s, r) => s + (r.premium || 0), 0),
-    });
-  }
-  return buckets;
-}
-
-/* ─── Small components ───────────────────────────────────────────────── */
-function Badge({ value }) {
-  const s = STATUS_COLOR[String(value).toLowerCase()] || { bg: "#f0f0f0", color: "#555" };
-  return (
-    <span style={{ display:"inline-block", padding:"2px 10px", borderRadius:20, fontSize:11, fontWeight:600, background:s.bg, color:s.color, whiteSpace:"nowrap" }}>
-      {value || "—"}
-    </span>
-  );
-}
-function MetricCard({ label, value, sub, color }) {
-  return (
-    <div style={{ background:"#f7f8fa", borderRadius:10, padding:"14px 18px", minWidth:0 }}>
-      <div style={{ fontSize:11, color:"#888", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 }}>{label}</div>
-      <div style={{ fontSize:26, fontWeight:700, color:color||"#1a1a2e", lineHeight:1 }}>{value}</div>
-      {sub && <div style={{ fontSize:11, color:"#aaa", marginTop:4 }}>{sub}</div>}
-    </div>
-  );
-}
-function Card({ title, children, style }) {
-  return (
-    <div style={{ background:"#fff", border:"1px solid #eee", borderRadius:12, padding:"18px 20px", ...style }}>
-      {title && <div style={{ fontSize:13, fontWeight:600, color:"#555", marginBottom:14 }}>{title}</div>}
-      {children}
-    </div>
-  );
-}
-const ChartTip = ({ active, payload, label }) => {
-  if (!active || !payload?.length) return null;
-  return (
-    <div style={{ background:"#fff", border:"1px solid #e0e0e0", borderRadius:8, padding:"8px 14px", fontSize:12 }}>
-      <div style={{ fontWeight:600, marginBottom:2 }}>{payload[0].payload?.fullName || label || payload[0].name}</div>
-      <div style={{ color:payload[0].fill||"#333" }}>{payload[0].value} cases</div>
-    </div>
-  );
-};
-
-/* ─── Debug Panel ─────────────────────────────────────────────────────── */
-function DebugPanel({ debug, onClose }) {
-  if (!debug) return null;
-  const unmapped = debug.mappedHeaders.filter(h => !h.ok && h.raw !== "");
-  const mapped   = debug.mappedHeaders.filter(h => h.ok);
-  return (
-    <div style={{ background:"#1a1a2e", color:"#e0e0e0", borderRadius:12, padding:"16px 20px", marginBottom:16, fontSize:12 }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-        <span style={{ fontWeight:600, color:"#fff" }}>Column detection — header on row {debug.headerRow + 1}</span>
-        <button onClick={onClose} style={{ background:"none", border:"none", color:"#aaa", cursor:"pointer", fontSize:14 }}>✕</button>
-      </div>
-      <div style={{ display:"flex", gap:24, flexWrap:"wrap" }}>
-        <div>
-          <div style={{ color:"#27a06b", fontWeight:600, marginBottom:6 }}>✓ Mapped ({mapped.length})</div>
-          {mapped.map((h,i) => (
-            <div key={i} style={{ color:"#aaa", marginBottom:3 }}>
-              <span style={{ color:"#fff" }}>{h.raw}</span> → <span style={{ color:"#7ec8e3" }}>{h.mapped}</span>
-            </div>
-          ))}
-        </div>
-        {unmapped.length > 0 && (
-          <div>
-            <div style={{ color:"#c0392b", fontWeight:600, marginBottom:6 }}>✕ Unmapped ({unmapped.length})</div>
-            {unmapped.map((h,i) => <div key={i} style={{ color:"#e07b7b", marginBottom:3 }}>{h.raw}</div>)}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ─── Upload Zone ─────────────────────────────────────────────────────── */
-function UploadZone({ onData, fileName }) {
-  const [dragging, setDragging] = useState(false);
-  const [parsing, setParsing]   = useState(false);
-  const [err, setErr]           = useState(null);
-  const inputRef = useRef();
-  const handle = useCallback(async (file) => {
-    if (!file) return;
-    const ext = file.name.split(".").pop().toLowerCase();
-    if (!["xlsx","xls","csv"].includes(ext)) { setErr("Please upload .xlsx, .xls, or .csv"); return; }
-    setErr(null); setParsing(true);
-    try {
-      const result = await parseExcel(file);
-      onData(result.data, file.name, result.debug);
-    } catch(e) { setErr("Could not parse: " + e.message); }
-    finally { setParsing(false); }
-  }, [onData]);
-  return (
-    <div
-      onDragOver={e=>{e.preventDefault();setDragging(true);}}
-      onDragLeave={()=>setDragging(false)}
-      onDrop={e=>{e.preventDefault();setDragging(false);handle(e.dataTransfer.files[0]);}}
-      onClick={()=>inputRef.current.click()}
-      style={{ border:`2px dashed ${dragging?"#2471b8":"#cdd5e0"}`, borderRadius:14, padding:"40px 24px", textAlign:"center", cursor:"pointer", background:dragging?"#f0f6ff":"#fafbfc", transition:"all 0.2s", userSelect:"none" }}
-    >
-      <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display:"none" }} onChange={e=>handle(e.target.files[0])} />
-      {parsing
-        ? <div style={{ color:"#2471b8", fontSize:14, fontWeight:500 }}>⏳ Parsing file…</div>
-        : <>
-            <div style={{ fontSize:40, marginBottom:12 }}>📊</div>
-            <div style={{ fontSize:15, fontWeight:600, color:"#333", marginBottom:6 }}>
-              {fileName ? `Loaded: ${fileName}` : "Upload your medical tracker Excel"}
-            </div>
-            <div style={{ fontSize:12, color:"#999" }}>Drag & drop or click — .xlsx · .xls · .csv</div>
-            {err && <div style={{ color:"#c0392b", fontSize:12, marginTop:10 }}>{err}</div>}
-          </>
-      }
-    </div>
-  );
-}
-
-/* ─── Pivot Table 1: Zone > GEO > TPA Name ───────────────────────────── */
-function PivotByZoneGeoTpa({ data }) {
-  const [dispFilter, setDispFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [expandedZones, setExpandedZones] = useState({});
-  const [expandedGeos, setExpandedGeos] = useState({});
-
-  const dispositions = useMemo(() => ["all", ...new Set(data.map(r => r.disposition).filter(Boolean))], [data]);
-  const statuses     = useMemo(() => ["all", ...new Set(data.map(r => r.finalStatus).filter(Boolean))], [data]);
-
-  const filtered = useMemo(() => data.filter(r => {
-    if (dispFilter !== "all" && r.disposition !== dispFilter) return false;
-    if (statusFilter !== "all" && r.finalStatus !== statusFilter) return false;
-    return true;
-  }), [data, dispFilter, statusFilter]);
-
-  // Build hierarchy: zone → geo → tpa
-  const hierarchy = useMemo(() => {
-    const h = {};
-    filtered.forEach(r => {
-      const z = r.zone || "—"; const g = r.geo || "—"; const t = r.tpaName || "—";
-      if (!h[z]) h[z] = {};
-      if (!h[z][g]) h[z][g] = {};
-      if (!h[z][g][t]) h[z][g][t] = { count:0, sa:0, prem:0 };
-      h[z][g][t].count++;
-      h[z][g][t].sa   += r.sumAssured || 0;
-      h[z][g][t].prem += r.premium    || 0;
-    });
-    return h;
-  }, [filtered]);
-
-  const grandTotal = useMemo(() => ({
-    count: filtered.length,
-    sa:    filtered.reduce((s,r) => s+(r.sumAssured||0), 0),
-    prem:  filtered.reduce((s,r) => s+(r.premium||0),    0),
-  }), [filtered]);
-
-  const toggleZone = (z) => setExpandedZones(p => ({...p, [z]: !p[z]}));
-  const toggleGeo  = (k) => setExpandedGeos(p =>  ({...p, [k]: !p[k]}));
-
-  const thStyle = { padding:"8px 12px", textAlign:"right", fontSize:11, fontWeight:700, color:"#fff", background:"#1a3a5c", whiteSpace:"nowrap", borderRight:"1px solid #2a4a6c" };
-  const thLeft  = { ...thStyle, textAlign:"left" };
-  const tdStyle = (indent=0) => ({ padding:"7px 12px", fontSize:12, paddingLeft:indent+12, borderBottom:"1px solid #f0f0f0", textAlign:"left" });
-  const tdNum   = { padding:"7px 12px", fontSize:12, textAlign:"right", borderBottom:"1px solid #f0f0f0", fontVariantNumeric:"tabular-nums" };
-
-  return (
-    <div>
-      {/* Filters */}
-      <div style={{ display:"flex", gap:10, marginBottom:16, flexWrap:"wrap", alignItems:"center" }}>
-        <span style={{ fontSize:12, color:"#666", fontWeight:600 }}>Filters:</span>
-        <select value={dispFilter} onChange={e=>setDispFilter(e.target.value)}
-          style={{ fontSize:12, padding:"5px 10px", borderRadius:7, border:"1px solid #ddd", background:"#fff" }}>
-          {dispositions.map(d => <option key={d} value={d}>{d === "all" ? "All Dispositions" : d}</option>)}
-        </select>
-        <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}
-          style={{ fontSize:12, padding:"5px 10px", borderRadius:7, border:"1px solid #ddd", background:"#fff" }}>
-          {statuses.map(s => <option key={s} value={s}>{s === "all" ? "All Final Statuses" : s}</option>)}
-        </select>
-      </div>
-
-      <div style={{ overflowX:"auto" }}>
-        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-          <thead>
-            <tr>
-              <th style={thLeft}>Zone</th>
-              <th style={thLeft}>GEO</th>
-              <th style={thLeft}>TPA Name</th>
-              <th style={thStyle}>Count of Loan No</th>
-              <th style={thStyle}>Sum of SumAssured (Crs)</th>
-              <th style={thStyle}>Sum of Premium (Crs)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {Object.entries(hierarchy).sort((a,b)=>a[0].localeCompare(b[0])).map(([zone, geos]) => {
-              const zTot = { count:0, sa:0, prem:0 };
-              Object.values(geos).forEach(tpas => Object.values(tpas).forEach(v => { zTot.count+=v.count; zTot.sa+=v.sa; zTot.prem+=v.prem; }));
-              const zExp = expandedZones[zone];
-              return [
-                // Zone row
-                <tr key={`z-${zone}`} style={{ background:"#e8f0fa", cursor:"pointer" }} onClick={()=>toggleZone(zone)}>
-                  <td style={{ ...tdStyle(0), fontWeight:700, color:"#1a3a5c" }}>
-                    <span style={{ marginRight:6 }}>{zExp ? "▼" : "▶"}</span>{zone}
-                  </td>
-                  <td style={{ ...tdStyle(0), color:"#888", fontStyle:"italic" }}></td>
-                  <td style={{ ...tdStyle(0) }}></td>
-                  <td style={{ ...tdNum, fontWeight:700 }}>{zTot.count}</td>
-                  <td style={{ ...tdNum, fontWeight:700 }}>{toCrs(zTot.sa)}</td>
-                  <td style={{ ...tdNum, fontWeight:700 }}>{toCrs(zTot.prem)}</td>
-                </tr>,
-                // GEO rows (if expanded)
-                ...(zExp ? Object.entries(geos).sort((a,b)=>a[0].localeCompare(b[0])).flatMap(([geo, tpas]) => {
-                  const gTot = { count:0, sa:0, prem:0 };
-                  Object.values(tpas).forEach(v => { gTot.count+=v.count; gTot.sa+=v.sa; gTot.prem+=v.prem; });
-                  const gKey = `${zone}|${geo}`;
-                  const gExp = expandedGeos[gKey];
-                  return [
-                    <tr key={`g-${gKey}`} style={{ background:"#f4f8fc", cursor:"pointer" }} onClick={e=>{e.stopPropagation();toggleGeo(gKey);}}>
-                      <td style={{ ...tdStyle(0) }}></td>
-                      <td style={{ ...tdStyle(4), fontWeight:600, color:"#2a5a8c" }}>
-                        <span style={{ marginRight:6 }}>{gExp ? "▼" : "▶"}</span>{geo}
-                      </td>
-                      <td style={{ ...tdStyle(4) }}></td>
-                      <td style={{ ...tdNum, fontWeight:600 }}>{gTot.count}</td>
-                      <td style={{ ...tdNum, fontWeight:600 }}>{toCrs(gTot.sa)}</td>
-                      <td style={{ ...tdNum, fontWeight:600 }}>{toCrs(gTot.prem)}</td>
-                    </tr>,
-                    // TPA rows (if geo expanded)
-                    ...(gExp ? Object.entries(tpas).sort((a,b)=>a[0].localeCompare(b[0])).map(([tpa, v]) => (
-                      <tr key={`t-${gKey}|${tpa}`} style={{ background:"#fff" }}
-                        onMouseEnter={e=>e.currentTarget.style.background="#fafeff"}
-                        onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
-                        <td style={{ ...tdStyle(0) }}></td>
-                        <td style={{ ...tdStyle(4) }}></td>
-                        <td style={{ ...tdStyle(16), color:"#555" }}>{tpa}</td>
-                        <td style={tdNum}>{v.count}</td>
-                        <td style={tdNum}>{toCrs(v.sa)}</td>
-                        <td style={tdNum}>{toCrs(v.prem)}</td>
-                      </tr>
-                    )) : [])
-                  ];
-                }) : [])
-              ];
-            })}
-            {/* Grand Total */}
-            <tr style={{ background:"#1a3a5c" }}>
-              <td colSpan={3} style={{ padding:"9px 12px", fontWeight:700, color:"#fff", fontSize:13 }}>Grand Total</td>
-              <td style={{ ...tdNum, fontWeight:700, color:"#fff", background:"#1a3a5c" }}>{grandTotal.count}</td>
-              <td style={{ ...tdNum, fontWeight:700, color:"#fff", background:"#1a3a5c" }}>{toCrs(grandTotal.sa)}</td>
-              <td style={{ ...tdNum, fontWeight:700, color:"#fff", background:"#1a3a5c" }}>{toCrs(grandTotal.prem)}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div style={{ fontSize:11, color:"#aaa", marginTop:8 }}>Click Zone / GEO rows to expand/collapse</div>
-    </div>
-  );
-}
-
-/* ─── Pivot Table 2: Ageing Buckets ──────────────────────────────────── */
-function PivotByAgeing({ data }) {
-  const [dispFilter, setDispFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-
-  const dispositions = useMemo(() => ["all", ...new Set(data.map(r => r.disposition).filter(Boolean))], [data]);
-  const statuses     = useMemo(() => ["all", ...new Set(data.map(r => r.finalStatus).filter(Boolean))], [data]);
-
-  const filtered = useMemo(() => data.filter(r => {
-    if (dispFilter !== "all" && r.disposition !== dispFilter) return false;
-    if (statusFilter !== "all" && r.finalStatus !== statusFilter) return false;
-    return true;
-  }), [data, dispFilter, statusFilter]);
-
-  const buckets = useMemo(() => buildAgingBuckets(filtered, 10), [filtered]);
-
-  const grandTotal = useMemo(() => ({
-    count: filtered.length,
-    sa:    filtered.reduce((s,r) => s+(r.sumAssured||0), 0),
-    prem:  filtered.reduce((s,r) => s+(r.premium||0),    0),
-  }), [filtered]);
-
-  const thStyle = { padding:"8px 12px", textAlign:"right", fontSize:11, fontWeight:700, color:"#fff", background:"#1a3a5c", whiteSpace:"nowrap", borderRight:"1px solid #2a4a6c" };
-  const thLeft  = { ...thStyle, textAlign:"left" };
-  const tdNum   = { padding:"7px 12px", fontSize:12, textAlign:"right", borderBottom:"1px solid #f0f0f0", fontVariantNumeric:"tabular-nums" };
-
-  return (
-    <div>
-      <div style={{ display:"flex", gap:10, marginBottom:16, flexWrap:"wrap", alignItems:"center" }}>
-        <span style={{ fontSize:12, color:"#666", fontWeight:600 }}>Filters:</span>
-        <select value={dispFilter} onChange={e=>setDispFilter(e.target.value)}
-          style={{ fontSize:12, padding:"5px 10px", borderRadius:7, border:"1px solid #ddd", background:"#fff" }}>
-          {dispositions.map(d => <option key={d} value={d}>{d === "all" ? "All Dispositions" : d}</option>)}
-        </select>
-        <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}
-          style={{ fontSize:12, padding:"5px 10px", borderRadius:7, border:"1px solid #ddd", background:"#fff" }}>
-          {statuses.map(s => <option key={s} value={s}>{s === "all" ? "All Final Statuses" : s}</option>)}
-        </select>
-      </div>
-
-      <div style={{ overflowX:"auto" }}>
-        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-          <thead>
-            <tr>
-              <th style={thLeft}>Ageing Bucket</th>
-              <th style={thStyle}>Count of Loan No</th>
-              <th style={thStyle}>Sum of SumAssured (Crs)</th>
-              <th style={thStyle}>Sum of Premium (Crs)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {buckets.map((b, i) => (
-              <tr key={b.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fbff" }}
-                onMouseEnter={e=>e.currentTarget.style.background="#eef5ff"}
-                onMouseLeave={e=>e.currentTarget.style.background=i%2===0?"#fff":"#f9fbff"}>
-                <td style={{ padding:"7px 12px", fontSize:12, fontWeight:600, borderBottom:"1px solid #f0f0f0" }}>
-                  <span style={{ display:"inline-block", width:10, height:10, borderRadius:2, background:AGING_COLORS_ARR[i % AGING_COLORS_ARR.length], marginRight:8 }}></span>
-                  {b.name}
-                </td>
-                <td style={tdNum}>{b.value}</td>
-                <td style={tdNum}>{toCrs(b.sumAssured)}</td>
-                <td style={tdNum}>{toCrs(b.premium)}</td>
-              </tr>
-            ))}
-            <tr style={{ background:"#1a3a5c" }}>
-              <td style={{ padding:"9px 12px", fontWeight:700, color:"#fff", fontSize:13 }}>Grand Total</td>
-              <td style={{ ...tdNum, fontWeight:700, color:"#fff", background:"#1a3a5c" }}>{grandTotal.count}</td>
-              <td style={{ ...tdNum, fontWeight:700, color:"#fff", background:"#1a3a5c" }}>{toCrs(grandTotal.sa)}</td>
-              <td style={{ ...tdNum, fontWeight:700, color:"#fff", background:"#1a3a5c" }}>{toCrs(grandTotal.prem)}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div style={{ fontSize:11, color:"#aaa", marginTop:8 }}>Buckets auto-generated from actual min–max of the Ageing column (10-day intervals)</div>
-    </div>
-  );
-}
-
-/* ─── Pivot Page ──────────────────────────────────────────────────────── */
-function PivotPage({ data }) {
-  return (
-    <div>
-      <Card title="Pivot 1 — Zone › GEO › TPA Name breakdown" style={{ marginBottom:20 }}>
-        <PivotByZoneGeoTpa data={data} />
-      </Card>
-      <Card title="Pivot 2 — Ageing bucket analysis">
-        <PivotByAgeing data={data} />
-      </Card>
-    </div>
-  );
-}
-
-/* ─── All 24 column definitions for the customer table ───────────────── */
-const ALL_COLUMNS = [
-  { col:"date",             label:"Date",            width:90  },
-  { col:"tpaApplicationNo", label:"TPA App No.",      width:130 },
-  { col:"loanNumber",       label:"Loan No.",         width:120 },
-  { col:"policy",           label:"Policy",           width:100 },
-  { col:"nameOfLifeAssured",label:"Name",             width:160 },
-  { col:"testCategory",     label:"Test Category",    width:160 },
-  { col:"premium",          label:"Premium",          width:80  },
-  { col:"sumAssured",       label:"Sum Assured",      width:100 },
-  { col:"age",              label:"Age",              width:50  },
-  { col:"productType",      label:"Product Type",     width:90  },
-  { col:"medicalType",      label:"Med. Type",        width:90  },
-  { col:"tpaName",          label:"TPA",              width:100 },
-  { col:"gender",           label:"Gender",           width:70  },
-  { col:"substatus",        label:"Sub Status",       width:200 },
-  { col:"appointmentDate",  label:"Appt. Date",       width:90  },
-  { col:"finalStatus",      label:"Final Status",     width:130 },
-  { col:"aging",            label:"Ageing",           width:65  },
-  { col:"branch",           label:"Branch",           width:120 },
-  { col:"customerContact",  label:"Contact No.",      width:110 },
-  { col:"zone",             label:"Zone",             width:70  },
-  { col:"state",            label:"State",            width:90  },
-  { col:"geo",              label:"GEO",              width:90  },
-  { col:"disposition",      label:"Disposition",      width:180 },
-  { col:"dispositionDate",  label:"Disp. Date",       width:90  },
-];
-
-/* ─── Main Dashboard ─────────────────────────────────────────────────── */
-export default function MedicalTracker() {
-  const [allData, setAllData]           = useState([]);
-  const [fileName, setFileName]         = useState("");
-  const [debugInfo, setDebugInfo]       = useState(null);
-  const [showDebug, setShowDebug]       = useState(false);
-  const [activePage, setActivePage]     = useState("dashboard"); // "dashboard" | "pivot"
-  const [search, setSearch]             = useState("");
-  const [zoneFilter, setZoneFilter]     = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [agingFilter, setAgingFilter]   = useState("all");
-  const [sortCol, setSortCol]           = useState("aging");
-  const [sortDir, setSortDir]           = useState("desc");
-  const [page, setPage]                 = useState(1);
-  const PAGE_SIZE = 15;
-
-  const onData = useCallback((rows, name, debug) => {
-    setAllData(rows); setFileName(name); setDebugInfo(debug); setShowDebug(true);
-    setPage(1); setSearch(""); setZoneFilter("all"); setStatusFilter("all"); setAgingFilter("all");
   }, []);
-  const handleFileChange = async (file) => {
-    if (!file) return;
-    try { const r = await parseExcel(file); onData(r.data, file.name, r.debug); } catch(e) { console.error(e); }
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault(); setDragOver(false);
+    const f = e.dataTransfer.files[0];
+    if (f && (f.name.endsWith(".xlsx") || f.name.endsWith(".xls") || f.name.endsWith(".csv"))) processFile(f);
+  }, [processFile]);
+
+  // ─── UTILITY ────────────────────────────────────────────────────────────────
+  // Fuzzy column finder: normalize name OR fall back to column index
+  const fuzzyCol = (row, keys, colIdx, ...candidates) => {
+    const norm = s => s.toLowerCase().replace(/[\s_\-\.]/g, "");
+    for (const c of candidates) {
+      const found = keys.find(k => norm(k) === norm(c));
+      if (found !== undefined && row[found] !== "" && row[found] !== undefined) return row[found];
+    }
+    if (colIdx !== null && keys[colIdx] !== undefined) return row[keys[colIdx]];
+    return 0;
   };
 
-  const zones    = useMemo(() => ["all", ...new Set(allData.map(r => r.zone).filter(Boolean))], [allData]);
-  const statuses = useMemo(() => ["all", ...new Set(allData.map(r => r.finalStatus).filter(Boolean))], [allData]);
+  // ─── YIELD SCORE (spec §10) ──────────────────────────────────────────────────
+  // Gap in bps vs target → Performance Score
+  const getYieldScore = (yieldPct, targetYieldPct) => {
+    if (!targetYieldPct || targetYieldPct === 0) return { score: 100, band: "No Target", bpsGap: 0 };
+    const bpsGap = (targetYieldPct - yieldPct) * 100; // 1% = 100 bps
+    if (bpsGap <= 0)       return { score: 125, band: "≥ Target",   bpsGap: Math.round(bpsGap) };
+    if (bpsGap < 10)       return { score: 100, band: "< 10 bps",  bpsGap: Math.round(bpsGap) };
+    if (bpsGap < 20)       return { score: 75,  band: "10–20 bps", bpsGap: Math.round(bpsGap) };
+    if (bpsGap < 30)       return { score: 50,  band: "20–30 bps", bpsGap: Math.round(bpsGap) };
+    return                        { score: 0,   band: "> 30 bps",  bpsGap: Math.round(bpsGap) };
+  };
 
-  const filtered = useMemo(() => allData.filter(r => {
-    if (zoneFilter !== "all" && r.zone !== zoneFilter) return false;
-    if (statusFilter !== "all" && r.finalStatus !== statusFilter) return false;
-    if (agingFilter === "critical" && r.aging < 60) return false;
-    if (agingFilter === "high" && (r.aging < 30 || r.aging >= 60)) return false;
-    if (agingFilter === "normal" && r.aging >= 30) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      return (
-        String(r.nameOfLifeAssured).toLowerCase().includes(q) ||
-        String(r.loanNumber).toLowerCase().includes(q) ||
-        String(r.tpaApplicationNo).toLowerCase().includes(q) ||
-        String(r.branch).toLowerCase().includes(q) ||
-        String(r.state).toLowerCase().includes(q)
-      );
-    }
-    return true;
-  }), [allData, zoneFilter, statusFilter, agingFilter, search]);
+  // ─── INCENTIVE ENGINE — COMMENTED OUT ──────────────────────────────────────
+  // Awaiting confirmed inputs: Budget sheet (Target Disb, Target Yield%),
+  // Role, Vintage, Category, HL vs MSME split, Channel Type, Monthly Cap data.
+  // Will be re-enabled in Phase 3 once Budget sheet upload is wired.
+  //
+  // const getIncentiveSlab = (achievementPct) => {
+  //   if (achievementPct < 50)  return { label: "No Incentive", rate: 0,      color: "#9B9B9B", bg: "#F5F5F5" };
+  //   if (achievementPct < 80)  return { label: "Low",          rate: 0.0050, color: "#854F0B", bg: "#FAEEDA" };
+  //   if (achievementPct < 100) return { label: "Medium",       rate: 0.0080, color: "#534AB7", bg: "#EEEDFE" };
+  //   if (achievementPct < 125) return { label: "High Jump",    rate: 0.0160, color: "#3B6D11", bg: "#EAF3DE" };
+  //   if (achievementPct < 200) return { label: "Accelerated",  rate: 0.0200, color: "#185FA5", bg: "#E6F1FB" };
+  //   return                           { label: "Maximum",      rate: 0.0250, color: "#0F6E56", bg: "#E1F5EE" };
+  // };
+  //
+  // const getMissedIncentive = (achievementPct, disbCrs) => {
+  //   const current = getIncentiveSlab(achievementPct);
+  //   const thresholds = [50, 80, 100, 125, 200];
+  //   const nextThreshold = thresholds.find(t => t > achievementPct) || 200;
+  //   const next = getIncentiveSlab(nextThreshold);
+  //   const missed = (next.rate - current.rate) * disbCrs;
+  //   const additionalDisbNeeded = achievementPct > 0
+  //     ? ((nextThreshold / achievementPct) - 1) * disbCrs
+  //     : 0;
+  //   return { current, next, missed, nextThreshold, additionalDisbNeeded };
+  // };
+  //
+  // NOTE: Achievement % needs Budget Target Disb per Geo — not yet in upload flow.
+  // Proxy logic (normalised against max disb) was removed as it gave misleading slabs.
+  // ────────────────────────────────────────────────────────────────────────────
 
-  const sorted = useMemo(() => [...filtered].sort((a, b) => {
-    let av = a[sortCol], bv = b[sortCol];
-    if (typeof av === "string") { av = av.toLowerCase(); bv = (bv||"").toLowerCase(); }
-    if (av == null) return 1; if (bv == null) return -1;
-    return sortDir === "asc" ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
-  }), [filtered, sortCol, sortDir]);
+  // Temporary passthrough so yieldPivot rows don't break other tabs
+  const getIncentiveSlab = () => ({ label: "—", rate: 0, color: "#9B9B9B", bg: "#F5F5F5" });
+  const getMissedIncentive = () => ({ current: getIncentiveSlab(), next: getIncentiveSlab(), missed: 0, nextThreshold: 0, additionalDisbNeeded: 0 });
 
-  const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
-  const pageRows  = sorted.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
-  const handleSort = (col) => {
-    if (sortCol === col) setSortDir(d => d==="asc"?"desc":"asc");
-    else { setSortCol(col); setSortDir("desc"); }
+  // ─── GEO PERFORMANCE SCORE (spec §11) ────────────────────────────────────────
+  // Score = (Disbursal% × 55%) + (Yield% × 15%) + (Conversion% × 10%)
+  // Since we don't have target/conversion in raw data, we normalise each metric
+  // across all geos (0–100 scale) and apply the weights.
+  const calcGeoScore = (disbCrs, yieldPct, allDisbMax, allYieldMax) => {
+    const disbScore    = allDisbMax > 0 ? (disbCrs / allDisbMax) * 100 : 0;
+    const yieldScore   = allYieldMax > 0 ? (yieldPct / allYieldMax) * 100 : 0;
+    return (disbScore * 0.55) + (yieldScore * 0.15);
+  };
+
+  // ─── ENRICHED ROW DATA ───────────────────────────────────────────────────────
+  // AO(41)=Disb Amt (idx 40), AQ(43)=Disb ROI (idx 42)
+  const enrichedData = useMemo(() => {
+    if (rawData.length === 0) return [];
+    const keys = Object.keys(rawData[0]);
+    return rawData.map(row => {
+      const disbAmt = parseFloat(fuzzyCol(row, keys, 40, "Disb Amt", "DisbAmt", "Disb_Amt")) || 0;
+      const disbROI = parseFloat(fuzzyCol(row, keys, 42, "Disb ROI", "DisbROI", "Disb_ROI")) || 0;
+      // Yield (spec §10): Revenue / Disbursal — here ROI IS the yield rate
+      const disbCrs = disbAmt / 1e7;
+      const revenue = disbAmt * (disbROI / 100); // revenue generated at that ROI
+      const wrr     = disbROI * disbCrs;         // weighted rate × volume (for aggregate yield)
+      return { ...row, "Disb in Crs": disbCrs, "Revenue": revenue, "WRR": wrr };
+    });
+  }, [rawData]);
+
+  // ─── FILTERS ─────────────────────────────────────────────────────────────────
+  const filterOptions = useMemo(() => {
+    const opts = {};
+    FILTER_FIELDS.forEach(f => {
+      const vals = [...new Set(rawData.map(r => String(r[f] || "")).filter(Boolean))].sort();
+      opts[f] = vals;
+    });
+    return opts;
+  }, [rawData]);
+
+  const filteredData = useMemo(() => {
+    return enrichedData.filter(row =>
+      Object.entries(filters).every(([k, vals]) => {
+        if (!vals || vals.length === 0) return true;
+        return vals.includes(String(row[k] || ""));
+      })
+    );
+  }, [enrichedData, filters]);
+
+  // ─── YIELD PIVOT: Zone > Geo (spec §10 + §11) ────────────────────────────────
+  // Yield = SUM(Revenue) / SUM(Disb Amt)  →  same as WRR/DisbCrs
+  const yieldPivot = useMemo(() => {
+    const map = {};
+    const keys = filteredData.length > 0 ? Object.keys(filteredData[0]) : [];
+    filteredData.forEach(row => {
+      const zone = String(fuzzyCol(row, keys, null, "Zone") || "Unknown");
+      const geo  = String(fuzzyCol(row, keys, null, "Geo")  || "Unknown");
+      const key  = `${zone}|||${geo}`;
+      if (!map[key]) map[key] = { Zone: zone, Geo: geo, WRR: 0, DisbCrs: 0, Revenue: 0 };
+      map[key].WRR     += row["WRR"]          || 0;
+      map[key].DisbCrs += row["Disb in Crs"]  || 0;
+      map[key].Revenue += row["Revenue"]       || 0;
+    });
+    // First pass: compute raw yield
+    const rows = Object.values(map).map(r => ({
+      ...r,
+      // Yield (spec §10) = Revenue / Disbursal — expressed as %
+      Yield: r.DisbCrs > 0 ? (r.Revenue / (r.DisbCrs * 1e7)) * 100 : 0,
+      // WRR-based yield (original formula, kept for reference)
+      YieldWRR: r.DisbCrs > 0 ? r.WRR / r.DisbCrs : 0,
+    }));
+    // Second pass: geo performance score needs normalised max values (spec §11)
+    const maxDisb  = Math.max(...rows.map(r => r.DisbCrs), 1);
+    const maxYield = Math.max(...rows.map(r => r.Yield), 1);
+    return rows.map(r => {
+      const yieldScore = getYieldScore(r.Yield, r.Yield * 1.05);
+      const geoScore   = calcGeoScore(r.DisbCrs, r.Yield, maxDisb, maxYield);
+
+      // ── INCENTIVE FIELDS — COMMENTED OUT ──────────────────────────────────
+      // Requires Budget sheet (Target Disb per Geo) to calculate real Achievement %.
+      // Proxy achievement (normalised disb) removed — gave misleading slab results.
+      // Re-enable in Phase 3 after Budget sheet upload is implemented.
+      //
+      // const achievePct   = (r.DisbCrs / (maxDisb * 0.8)) * 100;
+      // const slab         = getIncentiveSlab(achievePct);
+      // const missed       = getMissedIncentive(achievePct, r.DisbCrs);
+      // const incentiveAmt = slab.rate * r.DisbCrs;
+      // ──────────────────────────────────────────────────────────────────────
+
+      return {
+        ...r,
+        yieldScore,
+        geoScore,
+        achievePct:   null,   // pending Budget sheet
+        slab:         getIncentiveSlab(),
+        missed:       getMissedIncentive(),
+        incentiveAmt: 0,      // pending Budget sheet
+      };
+    }).sort((a, b) => a.Zone.localeCompare(b.Zone) || a.Geo.localeCompare(b.Geo));
+  }, [filteredData]);
+
+  const totalDisbCrs  = useMemo(() => filteredData.reduce((s, r) => s + (r["Disb in Crs"] || 0), 0), [filteredData]);
+  const totalRevenue  = useMemo(() => filteredData.reduce((s, r) => s + (r["Revenue"]      || 0), 0), [filteredData]);
+  const totalWRR      = useMemo(() => filteredData.reduce((s, r) => s + (r["WRR"]          || 0), 0), [filteredData]);
+  // Yield = Revenue / Disbursal (spec §10)
+  const overallYield  = totalDisbCrs > 0 ? (totalRevenue / (totalDisbCrs * 1e7)) * 100 : 0;
+
+  const pagedData = useMemo(() => {
+    const start = (page - 1) * ROWS_PER_PAGE;
+    return filteredData.slice(start, start + ROWS_PER_PAGE);
+  }, [filteredData, page]);
+
+  const totalPages = Math.ceil(filteredData.length / ROWS_PER_PAGE);
+
+  const toggleFilter = (field, val) => {
+    setFilters(prev => {
+      const cur = prev[field] || [];
+      const next = cur.includes(val) ? cur.filter(v => v !== val) : [...cur, val];
+      return { ...prev, [field]: next };
+    });
     setPage(1);
   };
 
-  /* Chart data */
-  const statusData = useMemo(() => {
-    const c = {};
-    filtered.forEach(r => { if (r.finalStatus) c[r.finalStatus] = (c[r.finalStatus]||0)+1; });
-    return Object.entries(c).map(([name,value]) => ({name,value}));
-  }, [filtered]);
+  const clearAllFilters = () => { setFilters({}); setPage(1); };
 
-  const dispData = useMemo(() => {
-    const c = {};
-    filtered.forEach(r => { if (r.disposition) c[r.disposition] = (c[r.disposition]||0)+1; });
-    return Object.entries(c).sort((a,b)=>b[1]-a[1])
-      .map(([name,value]) => ({ name:name.length>16?name.slice(0,16)+"…":name, fullName:name, value }));
-  }, [filtered]);
+  const activeFilterCount = Object.values(filters).reduce((s, v) => s + (v?.length || 0), 0);
 
-  const agingBuckets = useMemo(() => buildAgingBuckets(filtered, 10), [filtered]);
-  const agingChartData = agingBuckets.map((b,i) => ({ ...b, fill:AGING_COLORS_ARR[i%AGING_COLORS_ARR.length] }));
+  const displayCols = columns.length > 0
+    ? [...columns.filter(c => c !== "Disb in Crs" && c !== "WRR"), "Disb in Crs", "WRR"]
+    : [];
 
-  const tpaData = useMemo(() => {
-    const c = {};
-    filtered.forEach(r => { if (r.tpaName) c[r.tpaName] = (c[r.tpaName]||0)+1; });
-    return Object.entries(c).sort((a,b)=>b[1]-a[1])
-      .map(([name,value]) => ({ name, fullName:name, value }));
-  }, [filtered]);
-
-  const metrics = useMemo(() => {
-    const total     = filtered.length;
-    const completed = filtered.filter(r => r.finalStatus==="completed").length;
-    const nc        = filtered.filter(r => r.finalStatus==="non contactable").length;
-    const critical  = filtered.filter(r => r.aging>=60).length;
-    const pending   = filtered.filter(r => r.finalStatus==="pending").length;
-    const avgPrem   = total ? Math.round(filtered.reduce((s,r)=>s+(r.premium||0),0)/total) : 0;
-    const compRate  = total ? Math.round((completed/total)*100) : 0;
-    return { total, completed, nc, critical, pending, avgPrem, compRate };
-  }, [filtered]);
-
-  const Th = ({ col, label, width }) => (
-    <th onClick={()=>handleSort(col)} style={{
-      padding:"8px 12px", textAlign:"left", fontSize:11, fontWeight:600,
-      color:"#666", whiteSpace:"nowrap", background:"#f7f8fa",
-      borderBottom:"1px solid #eee", cursor:"pointer", width,
-      userSelect:"none", position:"sticky", top:0, zIndex:1,
-    }}>
-      {label}{sortCol===col?(sortDir==="asc"?" ↑":" ↓"):""}
-    </th>
-  );
-
-  const isEmpty = allData.length === 0;
-  const navBtn = (id, label) => (
-    <button onClick={()=>setActivePage(id)} style={{
-      padding:"8px 20px", borderRadius:8, cursor:"pointer", fontSize:13, fontWeight:600,
-      background: activePage===id ? "#1a3a5c" : "#fff",
-      color: activePage===id ? "#fff" : "#555",
-      border: activePage===id ? "1px solid #1a3a5c" : "1px solid #ddd",
-      transition:"all 0.15s",
-    }}>{label}</button>
-  );
+  const noData = rawData.length === 0;
 
   return (
-    <div style={{ fontFamily:"'DM Sans','Segoe UI',sans-serif", background:"#f4f5f7", minHeight:"100vh", padding:"24px 28px", color:"#1a1a2e" }}>
+    <div style={{
+      fontFamily: "'DM Sans', 'Segoe UI', system-ui, sans-serif",
+      minHeight: "100vh",
+      background: "var(--color-background-tertiary)",
+      color: "var(--color-text-primary)",
+      display: "flex",
+      flexDirection: "column"
+    }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" />
 
       {/* Header */}
-      <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", flexWrap:"wrap", gap:12, marginBottom:20 }}>
-        <div>
-          <h1 style={{ fontSize:22, fontWeight:700, margin:0, letterSpacing:"-0.02em" }}>Medical Checkup Tracker</h1>
-          <p style={{ fontSize:13, color:"#888", margin:"4px 0 0" }}>Home Loan Insurance · Sales Team Monitoring</p>
-        </div>
-        {!isEmpty && (
-          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-            {navBtn("dashboard","📊 Dashboard")}
-            {navBtn("pivot","🔢 Pivot View")}
-            <button onClick={()=>setShowDebug(v=>!v)} style={{ padding:"8px 14px", borderRadius:8, cursor:"pointer", background:"#fff", border:"1px solid #ddd", fontSize:12, color:"#555", fontWeight:500 }}>
-              {showDebug?"Hide":"Show"} column map
-            </button>
-            <label style={{ display:"inline-flex", alignItems:"center", gap:7, padding:"8px 16px", borderRadius:8, cursor:"pointer", background:"#fff", border:"1px solid #ddd", fontSize:13, fontWeight:500, color:"#333" }}>
-              📂 Upload new file
-              <input type="file" accept=".xlsx,.xls,.csv" style={{ display:"none" }} onChange={e=>{handleFileChange(e.target.files[0]);e.target.value="";}} />
-            </label>
+      <div style={{
+        background: "var(--color-background-primary)",
+        borderBottom: "0.5px solid var(--color-border-tertiary)",
+        padding: "0 28px",
+        height: 56,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        position: "sticky", top: 0, zIndex: 100
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{
+            width: 32, height: 32, borderRadius: 8,
+            background: "#185FA5",
+            display: "flex", alignItems: "center", justifyContent: "center"
+          }}>
+            <i className="ti ti-chart-line" style={{ fontSize: 17, color: "#fff" }} aria-hidden />
           </div>
-        )}
+          <div>
+            <span style={{ fontWeight: 600, fontSize: 15, letterSpacing: "-0.01em" }}>Yield Analytics</span>
+            <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginLeft: 8 }}>Disbursement & Yield Intelligence</span>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {fileName && <Badge color="teal"><i className="ti ti-file-spreadsheet" style={{ fontSize: 11 }} aria-hidden /> {fileName}</Badge>}
+          <button
+            onClick={() => fileRef.current?.click()}
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              background: "#185FA5", color: "#fff",
+              border: "none", borderRadius: 8,
+              padding: "7px 14px", fontSize: 13, fontWeight: 500,
+              cursor: "pointer"
+            }}
+          >
+            <i className="ti ti-upload" style={{ fontSize: 14 }} aria-hidden />
+            {noData ? "Upload File" : "Re-upload"}
+          </button>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }} onChange={e => e.target.files[0] && processFile(e.target.files[0])} />
+        </div>
       </div>
 
-      {isEmpty ? (
-        <div style={{ maxWidth:560, margin:"60px auto" }}>
-          <UploadZone onData={onData} fileName={fileName} />
-          <p style={{ textAlign:"center", fontSize:12, color:"#bbb", marginTop:16 }}>Parsed entirely in the browser — data never leaves your device.</p>
-        </div>
-      ) : (
-        <>
-          <div style={{ fontSize:12, color:"#888", marginBottom:12, display:"flex", alignItems:"center", gap:8 }}>
-            <span style={{ color:"#27a06b", fontWeight:600 }}>✓</span>
-            {fileName} — <strong style={{ color:"#555" }}>{allData.length.toLocaleString()} records loaded</strong>
-          </div>
+      <div style={{ display: "flex", flex: 1 }}>
+        {/* Sidebar */}
+        <aside style={{
+          width: noData ? 0 : 252,
+          minWidth: noData ? 0 : 252,
+          background: "var(--color-background-primary)",
+          borderRight: "0.5px solid var(--color-border-tertiary)",
+          overflow: "hidden",
+          transition: "width 0.3s ease, min-width 0.3s ease",
+          display: "flex", flexDirection: "column"
+        }}>
+          {!noData && (
+            <>
+              <div style={{
+                padding: "14px 16px 10px",
+                borderBottom: "0.5px solid var(--color-border-tertiary)",
+                display: "flex", alignItems: "center", justifyContent: "space-between"
+              }}>
+                <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: "var(--color-text-secondary)", textTransform: "uppercase" }}>
+                  Filters
+                </span>
+                {activeFilterCount > 0 && (
+                  <button onClick={clearAllFilters} style={{
+                    fontSize: 11, color: "#185FA5", background: "none", border: "none",
+                    cursor: "pointer", fontWeight: 500
+                  }}>Clear all ({activeFilterCount})</button>
+                )}
+              </div>
+              <div style={{ overflowY: "auto", flex: 1, padding: "8px 0" }}>
+                {FILTER_FIELDS.map(field => {
+                  const opts = filterOptions[field] || [];
+                  if (opts.length === 0) return null;
+                  const sel = filters[field] || [];
+                  const search = filterSearch[field] || "";
+                  const visible = opts.filter(v => v.toLowerCase().includes(search.toLowerCase()));
+                  return (
+                    <div key={field} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)", padding: "8px 14px 10px" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", letterSpacing: "0.03em" }}>{field.toUpperCase()}</span>
+                        {sel.length > 0 && <span style={{ fontSize: 10, color: "#185FA5", fontWeight: 500 }}>{sel.length} sel.</span>}
+                      </div>
+                      {opts.length > 6 && (
+                        <input
+                          type="text"
+                          placeholder="Search…"
+                          value={search}
+                          onChange={e => setFilterSearch(p => ({ ...p, [field]: e.target.value }))}
+                          style={{
+                            width: "100%", fontSize: 11, padding: "4px 8px",
+                            border: "0.5px solid var(--color-border-secondary)",
+                            borderRadius: 5, background: "var(--color-background-secondary)",
+                            color: "var(--color-text-primary)", marginBottom: 6,
+                            boxSizing: "border-box"
+                          }}
+                        />
+                      )}
+                      <div style={{ maxHeight: 140, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+                        {visible.slice(0, 30).map(v => (
+                          <label key={v} style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", padding: "2px 0" }}>
+                            <input
+                              type="checkbox"
+                              checked={sel.includes(v)}
+                              onChange={() => toggleFilter(field, v)}
+                              style={{ accentColor: "#185FA5", width: 12, height: 12 }}
+                            />
+                            <span style={{ fontSize: 11, color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={v}>{v || "(blank)"}</span>
+                          </label>
+                        ))}
+                        {visible.length > 30 && (
+                          <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", paddingTop: 2 }}>+{visible.length - 30} more. Use search to narrow.</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </aside>
 
-          {showDebug && debugInfo && <DebugPanel debug={debugInfo} onClose={()=>setShowDebug(false)} />}
-
-          {/* ── PIVOT PAGE ── */}
-          {activePage === "pivot" && <PivotPage data={allData} />}
-
-          {/* ── DASHBOARD PAGE ── */}
-          {activePage === "dashboard" && <>
-            {/* Filters */}
-            <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:20 }}>
-              {[
-                { id:"zone",   label:"Zone",   val:zoneFilter,   opts:zones,    set:v=>{setZoneFilter(v);setPage(1);} },
-                { id:"status", label:"Status", val:statusFilter, opts:statuses, set:v=>{setStatusFilter(v);setPage(1);} },
-                { id:"aging",  label:"Aging",  val:agingFilter,
-                  opts:[{value:"all",label:"All Aging"},{value:"critical",label:"Critical (60+ days)"},{value:"high",label:"High (30–59 days)"},{value:"normal",label:"Normal (<30 days)"}],
-                  set:v=>{setAgingFilter(v);setPage(1);} },
-              ].map(f => (
-                <select key={f.id} value={f.val} onChange={e=>f.set(e.target.value)}
-                  style={{ fontSize:12, padding:"6px 10px", borderRadius:8, border:"1px solid #ddd", background:"#fff", color:"#333", cursor:"pointer" }}>
-                  {f.opts.map(o => typeof o==="string"
-                    ? <option key={o} value={o}>{o==="all"?`All ${f.label}s`:o}</option>
-                    : <option key={o.value} value={o.value}>{o.label}</option>
-                  )}
-                </select>
-              ))}
-            </div>
-
-            {/* Metrics */}
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:10, marginBottom:20 }}>
-              <MetricCard label="Total Cases"     value={metrics.total}        sub="active pipeline" />
-              <MetricCard label="Completed"       value={metrics.completed}    sub={`${metrics.compRate}% rate`}  color="#27a06b" />
-              <MetricCard label="Non Contactable" value={metrics.nc}           sub="needs follow-up"              color="#c0392b" />
-              <MetricCard label="Critical Aging"  value={metrics.critical}     sub="60+ days pending"             color="#c0392b" />
-              <MetricCard label="Pending"         value={metrics.pending}      sub="appointment awaited"          color="#d4870f" />
-              <MetricCard label="Avg Premium"     value={fmtPrem(metrics.avgPrem)} sub="per policy" />
-            </div>
-
-            {/* Charts Row 1 */}
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 }}>
-              <Card title="Final status distribution">
-                <ResponsiveContainer width="100%" height={200}>
-                  <PieChart>
-                    <Pie data={statusData} cx="50%" cy="50%" innerRadius={52} outerRadius={78} paddingAngle={3} dataKey="value">
-                      {statusData.map((e,i) => <Cell key={i} fill={STATUS_COLOR[e.name]?.dot||DISP_COLORS[i%DISP_COLORS.length]} />)}
-                    </Pie>
-                    <Tooltip content={<ChartTip />} />
-                    <Legend iconSize={9} iconType="square" formatter={v=><span style={{fontSize:11,color:"#555"}}>{v}</span>} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </Card>
-              <Card title="Sales disposition breakdown">
-                <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={dispData} margin={{top:0,right:8,left:-20,bottom:0}}>
-                    <XAxis dataKey="name" tick={{fontSize:10}} interval={0} angle={-12} textAnchor="end" height={38} />
-                    <YAxis tick={{fontSize:10}} allowDecimals={false} />
-                    <Tooltip content={<ChartTip />} />
-                    <Bar dataKey="value" radius={[4,4,0,0]}>
-                      {dispData.map((_,i) => <Cell key={i} fill={DISP_COLORS[i%DISP_COLORS.length]} />)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </Card>
-            </div>
-
-            {/* Charts Row 2 */}
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 }}>
-              <Card title={`Dynamic aging buckets (${agingChartData.length > 0 ? `${agingChartData[0]?.name.split("-")[0]}–${agingChartData[agingChartData.length-1]?.name.split("-")[1]} days` : "—"})`}>
-                <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={agingChartData} margin={{top:0,right:8,left:-20,bottom:0}}>
-                    <XAxis dataKey="name" tick={{fontSize:10}} interval={0} angle={-12} textAnchor="end" height={38} />
-                    <YAxis tick={{fontSize:10}} allowDecimals={false} />
-                    <Tooltip content={<ChartTip />} />
-                    <Bar dataKey="value" radius={[4,4,0,0]}>
-                      {agingChartData.map((e,i) => <Cell key={i} fill={e.fill} />)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </Card>
-              <Card title="TPA-wise case distribution">
-                <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={tpaData} margin={{top:0,right:8,left:-20,bottom:0}}>
-                    <XAxis dataKey="name" tick={{fontSize:11}} />
-                    <YAxis tick={{fontSize:10}} allowDecimals={false} />
-                    <Tooltip content={<ChartTip />} />
-                    <Bar dataKey="value" radius={[4,4,0,0]}>
-                      {tpaData.map((_,i) => <Cell key={i} fill={DISP_COLORS[i%DISP_COLORS.length]} />)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </Card>
-            </div>
-
-            {/* Customer Table — ALL 24 columns */}
-            <Card>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:8 }}>
-                <span style={{ fontSize:13, fontWeight:600, color:"#555" }}>Customer records</span>
-                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                  <input type="text" placeholder="Search name / loan / TPA / branch / state…"
-                    value={search} onChange={e=>{setSearch(e.target.value);setPage(1);}}
-                    style={{ fontSize:12, padding:"6px 12px", borderRadius:8, border:"1px solid #ddd", width:260, outline:"none" }} />
-                  <span style={{ fontSize:11, color:"#aaa", whiteSpace:"nowrap" }}>{sorted.length.toLocaleString()} records</span>
+        {/* Main */}
+        <main style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          {noData ? (
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 40 }}>
+              <div
+                onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleDrop}
+                onClick={() => fileRef.current?.click()}
+                style={{
+                  border: `2px dashed ${dragOver ? "#185FA5" : "var(--color-border-secondary)"}`,
+                  borderRadius: 16,
+                  padding: "60px 80px",
+                  textAlign: "center",
+                  cursor: "pointer",
+                  background: dragOver ? "#E6F1FB" : "var(--color-background-primary)",
+                  transition: "all 0.2s ease",
+                  maxWidth: 480
+                }}
+              >
+                <div style={{
+                  width: 64, height: 64, borderRadius: 16,
+                  background: "#E6F1FB", display: "flex", alignItems: "center",
+                  justifyContent: "center", margin: "0 auto 20px"
+                }}>
+                  <i className="ti ti-file-spreadsheet" style={{ fontSize: 32, color: "#185FA5" }} aria-hidden />
                 </div>
+                <p style={{ fontSize: 17, fontWeight: 600, margin: "0 0 8px", color: "var(--color-text-primary)" }}>
+                  Drop your Excel file here
+                </p>
+                <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: "0 0 20px", lineHeight: 1.6 }}>
+                  Supports .xlsx, .xls, .csv files with loan disbursement data.<br />
+                  The tool will automatically calculate Disb in Crs, WRR, and Yield.
+                </p>
+                <button style={{
+                  background: "#185FA5", color: "#fff", border: "none",
+                  borderRadius: 8, padding: "9px 20px", fontSize: 13, fontWeight: 500, cursor: "pointer"
+                }}>
+                  <i className="ti ti-upload" style={{ fontSize: 14, marginRight: 6 }} aria-hidden />
+                  Browse file
+                </button>
+                <p style={{ fontSize: 11, color: "var(--color-text-tertiary)", margin: "16px 0 0" }}>
+                  {loading ? "Processing…" : "Or drag & drop from your desktop"}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Stats bar */}
+              <div style={{
+                background: "var(--color-background-primary)",
+                borderBottom: "0.5px solid var(--color-border-tertiary)",
+                padding: "12px 20px",
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                gap: 10
+              }}>
+                <MetricCard label="Total Rows" value={rawData.length.toLocaleString()} sub="in uploaded file" />
+                <MetricCard label="Filtered Rows" value={filteredData.length.toLocaleString()} sub={activeFilterCount > 0 ? `${activeFilterCount} filter(s) active` : "no filters"} color="#3B6D11" />
+                <MetricCard label="Columns" value={displayCols.length} sub={`${columns.length} source + 2 derived`} color="#534AB7" />
+                <MetricCard label="Total Disb (Crs)" value={totalDisbCrs.toFixed(2)} sub="sum of filtered rows" color="#0F6E56" />
+                <MetricCard label="Avg WRR" value={totalWRR.toFixed(4)} sub="weighted rate of return" color="#854F0B" />
+                <MetricCard label="Overall Yield" value={`${overallYield.toFixed(4)}%`} sub="WRR ÷ Disb in Crs" color={overallYield > 10 ? "#3B6D11" : "#185FA5"} />
               </div>
 
-              <div style={{ overflowX:"auto" }}>
-                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-                  <thead>
-                    <tr>
-                      {ALL_COLUMNS.map(c => <Th key={c.col} col={c.col} label={c.label} width={c.width} />)}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pageRows.length === 0 ? (
-                      <tr><td colSpan={ALL_COLUMNS.length} style={{ textAlign:"center", padding:"40px", color:"#ccc" }}>No records match the current filters.</td></tr>
-                    ) : pageRows.map((r, i) => (
-                      <tr key={i} style={{ borderBottom:"1px solid #f5f5f5" }}
-                        onMouseEnter={e=>e.currentTarget.style.background="#fafafa"}
-                        onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                        <td style={{ padding:"8px 12px", color:"#777", whiteSpace:"nowrap" }}>{r.date}</td>
-                        <td style={{ padding:"8px 12px", color:"#555", whiteSpace:"nowrap" }}>{String(r.tpaApplicationNo||"").slice(-16)}</td>
-                        <td style={{ padding:"8px 12px", color:"#555", whiteSpace:"nowrap" }}>{String(r.loanNumber||"").slice(-16)}</td>
-                        <td style={{ padding:"8px 12px", color:"#777" }}>{r.policy}</td>
-                        <td style={{ padding:"8px 12px", fontWeight:500, whiteSpace:"nowrap" }} title={r.nameOfLifeAssured}>{r.nameOfLifeAssured}</td>
-                        <td style={{ padding:"8px 12px", color:"#666", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={r.testCategory}>{r.testCategory}</td>
-                        <td style={{ padding:"8px 12px", whiteSpace:"nowrap" }}>{fmtPrem(r.premium)}</td>
-                        <td style={{ padding:"8px 12px", whiteSpace:"nowrap" }}>{fmtPrem(r.sumAssured)}</td>
-                        <td style={{ padding:"8px 12px" }}>{r.age}</td>
-                        <td style={{ padding:"8px 12px", color:"#666" }}>{r.productType}</td>
-                        <td style={{ padding:"8px 12px", textTransform:"capitalize" }}>{r.medicalType}</td>
-                        <td style={{ padding:"8px 12px", color:"#555", whiteSpace:"nowrap" }}>{r.tpaName}</td>
-                        <td style={{ padding:"8px 12px", textTransform:"capitalize" }}>{r.gender}</td>
-                        <td style={{ padding:"8px 12px", color:"#777", maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={r.substatus}>{r.substatus}</td>
-                        <td style={{ padding:"8px 12px", color:"#555", whiteSpace:"nowrap" }}>{r.appointmentDate||"—"}</td>
-                        <td style={{ padding:"8px 12px" }}><Badge value={r.finalStatus} /></td>
-                        <td style={{ padding:"8px 12px", fontWeight:700, color:agingColor(r.aging), whiteSpace:"nowrap" }}>{r.aging||0}d</td>
-                        <td style={{ padding:"8px 12px", color:"#555", whiteSpace:"nowrap" }}>{r.branch}</td>
-                        <td style={{ padding:"8px 12px", color:"#666" }}>{r.customerContact}</td>
-                        <td style={{ padding:"8px 12px" }}>{r.zone}</td>
-                        <td style={{ padding:"8px 12px", color:"#777" }}>{r.state}</td>
-                        <td style={{ padding:"8px 12px", color:"#777" }}>{r.geo}</td>
-                        <td style={{ padding:"8px 12px", maxWidth:180, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", color:"#666" }} title={r.disposition}>{r.disposition}</td>
-                        <td style={{ padding:"8px 12px", color:"#777", whiteSpace:"nowrap" }}>{r.dispositionDate||"—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              {/* Tabs */}
+              <div style={{
+                background: "var(--color-background-primary)",
+                borderBottom: "0.5px solid var(--color-border-tertiary)",
+                padding: "0 20px",
+                display: "flex", gap: 0
+              }}>
+                {[
+                  { id: "preview", label: "Data Preview", icon: "ti-table" },
+                  { id: "yield", label: "Yield Summary", icon: "ti-chart-bar" },
+                  { id: "performers", label: "Top & Bottom Performers", icon: "ti-arrows-sort" },
+                  { id: "incentives", label: "Incentives Engine", icon: "ti-trophy" },
+                ].map(t => (
+                  <button
+                    key={t.id}
+                    onClick={() => setTab(t.id)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 6,
+                      padding: "12px 16px",
+                      background: "none", border: "none",
+                      borderBottom: tab === t.id ? "2px solid #185FA5" : "2px solid transparent",
+                      color: tab === t.id ? "#185FA5" : "var(--color-text-secondary)",
+                      fontSize: 13, fontWeight: tab === t.id ? 600 : 400,
+                      cursor: "pointer", transition: "all 0.15s"
+                    }}
+                  >
+                    <i className={`ti ${t.icon}`} style={{ fontSize: 15 }} aria-hidden />
+                    {t.label}
+                    {t.id === "preview" && filteredData.length > 0 && (
+                      <span style={{
+                        background: "#E6F1FB", color: "#185FA5",
+                        borderRadius: 10, fontSize: 10, padding: "1px 6px", fontWeight: 600
+                      }}>{filteredData.length.toLocaleString()}</span>
+                    )}
+                    {t.id === "yield" && yieldPivot.length > 0 && (
+                      <span style={{
+                        background: "#E1F5EE", color: "#0F6E56",
+                        borderRadius: 10, fontSize: 10, padding: "1px 6px", fontWeight: 600
+                      }}>{yieldPivot.length} rows</span>
+                    )}
+                    {t.id === "performers" && yieldPivot.length > 0 && (
+                      <span style={{
+                        background: "#EEEDFE", color: "#534AB7",
+                        borderRadius: 10, fontSize: 10, padding: "1px 6px", fontWeight: 600
+                      }}>top 10 · bottom 10</span>
+                    )}
+                    {t.id === "incentives" && yieldPivot.length > 0 && (
+                      <span style={{
+                        background: "#FAEEDA", color: "#854F0B",
+                        borderRadius: 10, fontSize: 10, padding: "1px 6px", fontWeight: 600
+                      }}>{yieldPivot.length} mapped</span>
+                    )}
+                  </button>
+                ))}
               </div>
 
-              {/* Pagination */}
-              {pageCount > 1 && (
-                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:16, flexWrap:"wrap", gap:8 }}>
-                  <span style={{ fontSize:12, color:"#aaa" }}>
-                    Showing {((page-1)*PAGE_SIZE)+1}–{Math.min(page*PAGE_SIZE,sorted.length)} of {sorted.length.toLocaleString()}
-                  </span>
-                  <div style={{ display:"flex", gap:6 }}>
-                    {[
-                      { label:"««",     action:()=>setPage(1),                         disabled:page===1 },
-                      { label:"← Prev", action:()=>setPage(p=>Math.max(1,p-1)),        disabled:page===1 },
-                      { label:`${page} / ${pageCount}`, action:null, disabled:true, plain:true },
-                      { label:"Next →", action:()=>setPage(p=>Math.min(pageCount,p+1)),disabled:page===pageCount },
-                      { label:"»»",     action:()=>setPage(pageCount),                 disabled:page===pageCount },
-                    ].map((btn,i) => btn.plain
-                      ? <span key={i} style={{ padding:"5px 12px", fontSize:12, color:"#555" }}>{btn.label}</span>
-                      : <button key={i} onClick={btn.action} disabled={btn.disabled}
-                          style={{ padding:"5px 12px", borderRadius:6, border:"1px solid #ddd", background:"#fff", fontSize:12, cursor:btn.disabled?"not-allowed":"pointer", color:btn.disabled?"#ccc":"#333" }}>
-                          {btn.label}
-                        </button>
+              {/* Content */}
+              <div style={{ flex: 1, overflow: "auto", padding: "0" }}>
+
+                {/* DATA PREVIEW TAB */}
+                {tab === "preview" && (
+                  <div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{
+                        width: "100%", borderCollapse: "collapse",
+                        fontSize: 12, fontFamily: "'DM Mono', monospace"
+                      }}>
+                        <thead>
+                          <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 10 }}>
+                            <th style={thStyle}>#</th>
+                            {displayCols.map(c => (
+                              <th key={c} style={{
+                                ...thStyle,
+                                background: (c === "Disb in Crs" || c === "WRR") ? "#E1F5EE" : "var(--color-background-secondary)",
+                                color: (c === "Disb in Crs" || c === "WRR") ? "#0F6E56" : "var(--color-text-secondary)",
+                                whiteSpace: "nowrap"
+                              }}>
+                                {c}
+                                {(c === "Disb in Crs" || c === "WRR") && (
+                                  <span style={{ fontSize: 9, marginLeft: 4, background: "#9FE1CB", color: "#085041", borderRadius: 3, padding: "1px 4px" }}>DERIVED</span>
+                                )}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pagedData.map((row, i) => (
+                            <tr key={i} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}
+                              onMouseEnter={e => e.currentTarget.style.background = "var(--color-background-secondary)"}
+                              onMouseLeave={e => e.currentTarget.style.background = ""}
+                            >
+                              <td style={{ ...tdStyle, color: "var(--color-text-tertiary)", userSelect: "none" }}>
+                                {(page - 1) * ROWS_PER_PAGE + i + 1}
+                              </td>
+                              {displayCols.map(c => {
+                                const val = row[c];
+                                const isNum = typeof val === "number";
+                                const isDerived = c === "Disb in Crs" || c === "WRR";
+                                return (
+                                  <td key={c} style={{
+                                    ...tdStyle,
+                                    textAlign: isNum ? "right" : "left",
+                                    color: isDerived ? "#0F6E56" : "var(--color-text-primary)",
+                                    fontWeight: isDerived ? 500 : 400,
+                                    whiteSpace: "nowrap",
+                                    maxWidth: 180,
+                                    overflow: "hidden", textOverflow: "ellipsis"
+                                  }}>
+                                    {isDerived && isNum ? val.toFixed(6) : (val instanceof Date ? val.toLocaleDateString() : String(val ?? ""))}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Pagination */}
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 8, justifyContent: "center",
+                      padding: "14px 20px",
+                      borderTop: "0.5px solid var(--color-border-tertiary)",
+                      background: "var(--color-background-primary)"
+                    }}>
+                      <button onClick={() => setPage(1)} disabled={page === 1} style={pgBtn}>«</button>
+                      <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} style={pgBtn}>‹</button>
+                      <span style={{ fontSize: 12, color: "var(--color-text-secondary)", padding: "0 8px" }}>
+                        Page <strong>{page}</strong> of <strong>{totalPages}</strong>
+                        <span style={{ marginLeft: 8, color: "var(--color-text-tertiary)" }}>({filteredData.length.toLocaleString()} rows)</span>
+                      </span>
+                      <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} style={pgBtn}>›</button>
+                      <button onClick={() => setPage(totalPages)} disabled={page === totalPages} style={pgBtn}>»</button>
+                    </div>
+                  </div>
+                )}
+
+                {/* YIELD SUMMARY TAB */}
+                {tab === "yield" && (
+                  <div style={{ padding: 20 }}>
+                    {/* Column detection status */}
+                    {(() => {
+                      if (rawData.length === 0) return null;
+                      const firstRow = rawData[0];
+                      const norm = s => s.toLowerCase().replace(/[\s_]/g, "");
+                      const keys = Object.keys(firstRow);
+                      const findCol = (...cands) => keys.find(k => cands.some(c => norm(k) === norm(c)));
+                      const disbAmtCol = findCol("Disb Amt", "DisbAmt", "Disb_Amt");
+                      const disbROICol = findCol("Disb ROI", "DisbROI", "Disb_ROI");
+                      const zoneCol = findCol("Zone");
+                      const geoCol = findCol("Geo");
+                      const allFound = disbAmtCol && disbROICol && zoneCol && geoCol;
+                      return (
+                        <div style={{
+                          display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16,
+                          padding: "10px 14px",
+                          background: allFound ? "#EAF3DE" : "#FAEEDA",
+                          border: `0.5px solid ${allFound ? "#C0DD97" : "#FAC775"}`,
+                          borderRadius: 8
+                        }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: allFound ? "#3B6D11" : "#854F0B", marginRight: 8 }}>
+                            {allFound ? "✓ All required columns detected" : "⚠ Some columns not found — verify column names"}
+                          </span>
+                          {[
+                            { label: "Disb Amt", found: disbAmtCol },
+                            { label: "Disb ROI", found: disbROICol },
+                            { label: "Zone", found: zoneCol },
+                            { label: "Geo", found: geoCol },
+                          ].map(({ label, found }) => (
+                            <span key={label} style={{
+                              fontSize: 11, padding: "2px 8px", borderRadius: 5, fontFamily: "'DM Mono', monospace",
+                              background: found ? "#C0DD97" : "#F7C1C1",
+                              color: found ? "#085041" : "#791F1F"
+                            }}>
+                              {label}: {found ? `"${found}"` : "NOT FOUND"}
+                            </span>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                    <div style={{ marginBottom: 16 }}>
+                      <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.6 }}>
+                        Pivot: <strong>Zone → Geo</strong> &nbsp;|&nbsp; Yield = Revenue ÷ Disbursal (spec §10) &nbsp;|&nbsp; Geo Score = Disb×55% + Yield×15% (spec §11)
+                      </p>
+                    </div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "'DM Mono', monospace" }}>
+                        <thead>
+                          <tr style={{ background: "var(--color-background-secondary)" }}>
+                            {[
+                              "Zone","Geo","Disb (Crs)","Revenue (₹)","Yield %",
+                              "Yield Band","Yield Score","Geo Score",
+                              // "Incentive Slab","Est. Incentive (Crs)"  // commented out — needs Budget sheet
+                            ].map(h => (
+                              <th key={h} style={thStyle}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {yieldPivot.map((row, i) => (
+                            <tr key={i} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}
+                              onMouseEnter={e => e.currentTarget.style.background = "var(--color-background-secondary)"}
+                              onMouseLeave={e => e.currentTarget.style.background = ""}
+                            >
+                              <td style={tdStyle}>{row.Zone}</td>
+                              <td style={tdStyle}>{row.Geo}</td>
+                              <td style={{ ...tdStyle, textAlign: "right", color: "#0F6E56", fontWeight: 500 }}>{row.DisbCrs.toFixed(2)}</td>
+                              <td style={{ ...tdStyle, textAlign: "right", color: "#534AB7", fontWeight: 500 }}>
+                                {row.Revenue >= 1e7
+                                  ? `₹${(row.Revenue/1e7).toFixed(2)}Cr`
+                                  : `₹${(row.Revenue/1e5).toFixed(2)}L`}
+                              </td>
+                              <td style={{ ...tdStyle, textAlign: "right" }}>
+                                <span style={{
+                                  background: row.Yield >= 13 ? "#EAF3DE" : row.Yield >= 11 ? "#E6F1FB" : row.Yield >= 9 ? "#FAEEDA" : "#FDECEA",
+                                  color:      row.Yield >= 13 ? "#3B6D11" : row.Yield >= 11 ? "#185FA5" : row.Yield >= 9 ? "#854F0B" : "#C0392B",
+                                  borderRadius: 5, padding: "2px 7px", fontWeight: 700, fontSize: 11
+                                }}>{row.Yield.toFixed(4)}%</span>
+                              </td>
+                              <td style={tdStyle}>
+                                <span style={{
+                                  fontSize: 10, padding: "2px 6px", borderRadius: 4,
+                                  background: row.yieldScore.score >= 125 ? "#EAF3DE" : row.yieldScore.score >= 100 ? "#E6F1FB" : row.yieldScore.score >= 75 ? "#FAEEDA" : "#FDECEA",
+                                  color:      row.yieldScore.score >= 125 ? "#3B6D11" : row.yieldScore.score >= 100 ? "#185FA5" : row.yieldScore.score >= 75 ? "#854F0B" : "#C0392B",
+                                  fontWeight: 600
+                                }}>{row.yieldScore.band}</span>
+                              </td>
+                              <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600, color: row.yieldScore.score >= 100 ? "#3B6D11" : "#C0392B" }}>
+                                {row.yieldScore.score}%
+                              </td>
+                              <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600, color: "#185FA5" }}>
+                                {row.geoScore.toFixed(1)}
+                              </td>
+                              {/* Incentive Slab + Est. Incentive — commented out, needs Budget sheet
+                              <td style={tdStyle}>
+                                <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: row.slab.bg, color: row.slab.color, fontWeight: 600 }}>
+                                  {row.slab.label}
+                                </span>
+                              </td>
+                              <td style={{ ...tdStyle, textAlign: "right", color: "#0F6E56", fontWeight: 500 }}>
+                                ₹{row.incentiveAmt.toFixed(4)}
+                              </td>
+                              */}
+                            </tr>
+                          ))}
+                          {/* Totals row */}
+                          <tr style={{ background: "var(--color-background-secondary)", borderTop: "1px solid var(--color-border-primary)" }}>
+                            <td style={{ ...tdStyle, fontWeight: 700 }}>TOTAL</td>
+                            <td style={tdStyle}></td>
+                            <td style={{ ...tdStyle, textAlign: "right", color: "#0F6E56", fontWeight: 700 }}>{totalDisbCrs.toFixed(2)}</td>
+                            <td style={{ ...tdStyle, textAlign: "right", color: "#534AB7", fontWeight: 700 }}>
+                              {totalRevenue >= 1e7 ? `₹${(totalRevenue/1e7).toFixed(2)}Cr` : `₹${(totalRevenue/1e5).toFixed(2)}L`}
+                            </td>
+                            <td style={{ ...tdStyle, textAlign: "right" }}>
+                              <span style={{ background: "#185FA5", color: "#fff", borderRadius: 5, padding: "2px 8px", fontWeight: 700, fontSize: 11 }}>
+                                {overallYield.toFixed(4)}%
+                              </span>
+                            </td>
+                            <td style={tdStyle}></td>
+                            <td style={tdStyle}></td>
+                            <td style={tdStyle}></td>
+                            {/* <td style={tdStyle}></td> */}
+                            {/* <td style={{ ...tdStyle, textAlign: "right", color: "#0F6E56", fontWeight: 700 }}>₹{yieldPivot.reduce((s,r) => s + r.incentiveAmt, 0).toFixed(4)}</td> */}
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* TOP & BOTTOM PERFORMERS TAB */}
+                {tab === "performers" && (
+                  <div style={{ padding: 24 }}>
+                    <div style={{ marginBottom: 20 }}>
+                      <h2 style={{ fontSize: 16, fontWeight: 600, margin: "0 0 6px", color: "var(--color-text-primary)" }}>Top & Bottom Performers</h2>
+                      <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: 0 }}>
+                        Ranked by Yield % from the Yield Summary. Zone → Geo level.
+                      </p>
+                    </div>
+
+                    {yieldPivot.length === 0 ? (
+                      <div style={{
+                        textAlign: "center", padding: "48px 24px",
+                        border: "0.5px dashed var(--color-border-secondary)",
+                        borderRadius: 10, color: "var(--color-text-tertiary)"
+                      }}>
+                        <i className="ti ti-database-off" style={{ fontSize: 32, display: "block", marginBottom: 12 }} aria-hidden />
+                        <p style={{ fontSize: 13, margin: 0 }}>Upload data first to see performer rankings.</p>
+                      </div>
+                    ) : (
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+
+                        {/* TOP 10 */}
+                        <div>
+                          <div style={{
+                            display: "flex", alignItems: "center", gap: 8, marginBottom: 12,
+                            padding: "10px 14px",
+                            background: "#EAF3DE", border: "0.5px solid #C0DD97", borderRadius: 8
+                          }}>
+                            <i className="ti ti-trending-up" style={{ fontSize: 16, color: "#3B6D11" }} aria-hidden />
+                            <span style={{ fontSize: 13, fontWeight: 600, color: "#3B6D11" }}>Top 10 Best Performers</span>
+                            <span style={{ marginLeft: "auto", fontSize: 11, color: "#3B6D11", fontFamily: "'DM Mono', monospace" }}>Highest Yield %</span>
+                          </div>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "'DM Mono', monospace" }}>
+                            <thead>
+                              <tr style={{ background: "#EAF3DE" }}>
+                                <th style={{ ...thStyle, background: "#EAF3DE", color: "#3B6D11" }}>#</th>
+                                <th style={{ ...thStyle, background: "#EAF3DE", color: "#3B6D11" }}>Zone</th>
+                                <th style={{ ...thStyle, background: "#EAF3DE", color: "#3B6D11" }}>Geo</th>
+                                <th style={{ ...thStyle, background: "#EAF3DE", color: "#3B6D11", textAlign: "right" }}>Disb (Crs)</th>
+                                <th style={{ ...thStyle, background: "#EAF3DE", color: "#3B6D11", textAlign: "right" }}>Yield %</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {[...yieldPivot]
+                                .sort((a, b) => b.Yield - a.Yield)
+                                .slice(0, 10)
+                                .map((row, i) => (
+                                  <tr key={i} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}
+                                    onMouseEnter={e => e.currentTarget.style.background = "#F3FAE8"}
+                                    onMouseLeave={e => e.currentTarget.style.background = ""}
+                                  >
+                                    <td style={{ ...tdStyle, width: 28 }}>
+                                      <span style={{
+                                        display: "inline-flex", alignItems: "center", justifyContent: "center",
+                                        width: 20, height: 20, borderRadius: "50%",
+                                        background: i === 0 ? "#3B6D11" : i === 1 ? "#5A9E1C" : i === 2 ? "#7DC142" : "#EAF3DE",
+                                        color: i < 3 ? "#fff" : "#3B6D11",
+                                        fontSize: 10, fontWeight: 700
+                                      }}>{i + 1}</span>
+                                    </td>
+                                    <td style={tdStyle}>{row.Zone}</td>
+                                    <td style={tdStyle}>{row.Geo}</td>
+                                    <td style={{ ...tdStyle, textAlign: "right", color: "#0F6E56" }}>{row.DisbCrs.toFixed(2)}</td>
+                                    <td style={{ ...tdStyle, textAlign: "right" }}>
+                                      <span style={{
+                                        background: "#EAF3DE", color: "#3B6D11",
+                                        borderRadius: 5, padding: "2px 7px", fontWeight: 700, fontSize: 11
+                                      }}>{row.Yield.toFixed(4)}%</span>
+                                    </td>
+                                  </tr>
+                                ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* BOTTOM 10 */}
+                        <div>
+                          <div style={{
+                            display: "flex", alignItems: "center", gap: 8, marginBottom: 12,
+                            padding: "10px 14px",
+                            background: "#FDECEA", border: "0.5px solid #F5B7B1", borderRadius: 8
+                          }}>
+                            <i className="ti ti-trending-down" style={{ fontSize: 16, color: "#C0392B" }} aria-hidden />
+                            <span style={{ fontSize: 13, fontWeight: 600, color: "#C0392B" }}>Bottom 10 Low Performers</span>
+                            <span style={{ marginLeft: "auto", fontSize: 11, color: "#C0392B", fontFamily: "'DM Mono', monospace" }}>Lowest Yield %</span>
+                          </div>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "'DM Mono', monospace" }}>
+                            <thead>
+                              <tr style={{ background: "#FDECEA" }}>
+                                <th style={{ ...thStyle, background: "#FDECEA", color: "#C0392B" }}>#</th>
+                                <th style={{ ...thStyle, background: "#FDECEA", color: "#C0392B" }}>Zone</th>
+                                <th style={{ ...thStyle, background: "#FDECEA", color: "#C0392B" }}>Geo</th>
+                                <th style={{ ...thStyle, background: "#FDECEA", color: "#C0392B", textAlign: "right" }}>Disb (Crs)</th>
+                                <th style={{ ...thStyle, background: "#FDECEA", color: "#C0392B", textAlign: "right" }}>Yield %</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {[...yieldPivot]
+                                .sort((a, b) => a.Yield - b.Yield)
+                                .slice(0, 10)
+                                .map((row, i) => (
+                                  <tr key={i} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}
+                                    onMouseEnter={e => e.currentTarget.style.background = "#FEF5F4"}
+                                    onMouseLeave={e => e.currentTarget.style.background = ""}
+                                  >
+                                    <td style={{ ...tdStyle, width: 28 }}>
+                                      <span style={{
+                                        display: "inline-flex", alignItems: "center", justifyContent: "center",
+                                        width: 20, height: 20, borderRadius: "50%",
+                                        background: i === 0 ? "#C0392B" : i === 1 ? "#E74C3C" : i === 2 ? "#EC7063" : "#FDECEA",
+                                        color: i < 3 ? "#fff" : "#C0392B",
+                                        fontSize: 10, fontWeight: 700
+                                      }}>{i + 1}</span>
+                                    </td>
+                                    <td style={tdStyle}>{row.Zone}</td>
+                                    <td style={tdStyle}>{row.Geo}</td>
+                                    <td style={{ ...tdStyle, textAlign: "right", color: "#C0392B" }}>{row.DisbCrs.toFixed(2)}</td>
+                                    <td style={{ ...tdStyle, textAlign: "right" }}>
+                                      <span style={{
+                                        background: "#FDECEA", color: "#C0392B",
+                                        borderRadius: 5, padding: "2px 7px", fontWeight: 700, fontSize: 11
+                                      }}>{row.Yield.toFixed(4)}%</span>
+                                    </td>
+                                  </tr>
+                                ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                      </div>
                     )}
                   </div>
-                </div>
-              )}
-            </Card>
-          </>}
-        </>
-      )}
+                )}
+
+                {/* INCENTIVES ENGINE TAB — COMING IN PHASE 3 */}
+                {tab === "incentives" && (
+                  <div style={{ padding: 24 }}>
+                    <div style={{ marginBottom: 24 }}>
+                      <h2 style={{ fontSize: 16, fontWeight: 600, margin: "0 0 6px", color: "var(--color-text-primary)" }}>Incentives Engine</h2>
+                      <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.6 }}>
+                        Slab-based incentive calculation · Missed incentive analysis · Auto-generated insights
+                      </p>
+                    </div>
+
+                    {/* Coming Soon Banner */}
+                    <div style={{
+                      background: "#FAEEDA", border: "0.5px solid #FAC775",
+                      borderRadius: 10, padding: "18px 20px", marginBottom: 24,
+                      display: "flex", alignItems: "flex-start", gap: 12
+                    }}>
+                      <i className="ti ti-clock-pause" style={{ fontSize: 22, color: "#854F0B", marginTop: 2, flexShrink: 0 }} aria-hidden />
+                      <div>
+                        <p style={{ fontSize: 13, fontWeight: 700, color: "#854F0B", margin: "0 0 4px" }}>
+                          Incentives Engine — Pending Phase 3
+                        </p>
+                        <p style={{ fontSize: 12, color: "#854F0B", margin: 0, lineHeight: 1.7 }}>
+                          This module requires a <strong>Budget / Target sheet</strong> upload alongside the Actual data sheet.
+                          Without Target Disb per Geo and Target Yield %, Achievement % cannot be calculated accurately
+                          and slab classification would produce misleading results.
+                          <br />
+                          Once the dual-sheet upload flow is built in Phase 3, this tab will activate automatically.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* What will be here — preview cards */}
+                    <h3 style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--color-text-secondary)", margin: "0 0 12px" }}>
+                      What this tab will calculate
+                    </h3>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 28 }}>
+                      {[
+                        {
+                          icon: "ti-layers-subtract",
+                          title: "Incentive Slab Classification",
+                          desc: "Each geo classified into 6 slabs based on Achievement % vs Target Disb. Rates: 0% / 0.50% / 0.80% / 1.60% / 2.00% / 2.50%",
+                          color: "#185FA5", bg: "#E6F1FB", border: "#B5D4F4",
+                          blocked: "Needs: Target Disb per Geo"
+                        },
+                        {
+                          icon: "ti-calculator",
+                          title: "Incentive Amount",
+                          desc: "Incentive = Actual Disb × Slab Rate. Role-specific rates for RM / BSM / ABSM / CSM. Caps enforced (RM ₹1.25L, BSM ₹2L, CSM ₹8L).",
+                          color: "#3B6D11", bg: "#EAF3DE", border: "#C0DD97",
+                          blocked: "Needs: Role, Vintage, Category columns"
+                        },
+                        {
+                          icon: "ti-trending-up",
+                          title: "Missed Incentive",
+                          desc: "Missed = (Next Slab Rate − Current Rate) × Disb. Shows exact ₹ left on table and additional disb needed to cross next threshold.",
+                          color: "#C0392B", bg: "#FDECEA", border: "#F5B7B1",
+                          blocked: "Needs: Achievement % (requires Target Disb)"
+                        },
+                        {
+                          icon: "ti-mood-check",
+                          title: "Bonus Components",
+                          desc: "Consistency bonus (2/3 months ≥ 100%), Team bonus (±10%), Quarterly bonus for CSM, Direct channel bonus/penalty.",
+                          color: "#534AB7", bg: "#EEEDFE", border: "#CECBF6",
+                          blocked: "Needs: Monthly history + team active % data"
+                        },
+                        {
+                          icon: "ti-bulb",
+                          title: "Auto-Generated Insights",
+                          desc: "5 plain-English insight cards: yield gap alert, disbursal gap, MSME warning, leakage identification, threshold nudge.",
+                          color: "#0F6E56", bg: "#E1F5EE", border: "#9FE1CB",
+                          blocked: "Activates automatically once above inputs available"
+                        },
+                        {
+                          icon: "ti-device-analytics",
+                          title: "What-If Simulator",
+                          desc: "User inputs +X bps yield or +₹Y Crs disb. System shows new slab, new incentive, and exact gain amount instantly.",
+                          color: "#854F0B", bg: "#FAEEDA", border: "#FAC775",
+                          blocked: "Needs: Target sheet for baseline comparison"
+                        },
+                      ].map((item, i) => (
+                        <div key={i} style={{ background: item.bg, border: `0.5px solid ${item.border}`, borderRadius: 10, padding: "14px 16px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                            <i className={`ti ${item.icon}`} style={{ fontSize: 17, color: item.color }} aria-hidden />
+                            <span style={{ fontSize: 12, fontWeight: 700, color: item.color }}>{item.title}</span>
+                          </div>
+                          <p style={{ fontSize: 11, color: item.color, margin: "0 0 10px", lineHeight: 1.6 }}>{item.desc}</p>
+                          <div style={{ display: "flex", alignItems: "center", gap: 5, background: "rgba(0,0,0,0.06)", borderRadius: 5, padding: "4px 8px" }}>
+                            <i className="ti ti-lock" style={{ fontSize: 11, color: item.color }} aria-hidden />
+                            <span style={{ fontSize: 10, color: item.color, fontWeight: 600 }}>{item.blocked}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Slab reference — shown as informational only */}
+                    <h3 style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--color-text-secondary)", margin: "0 0 12px" }}>
+                      Slab Reference (informational)
+                    </h3>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "'DM Mono', monospace" }}>
+                        <thead>
+                          <tr style={{ background: "var(--color-background-secondary)" }}>
+                            {["Slab", "Achievement % Range", "Payout Rate", "Status"].map(h => (
+                              <th key={h} style={thStyle}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[
+                            { label: "No Incentive", range: "< 50%",     rate: "0.00%",  color: "#9B9B9B", bg: "#F5F5F5" },
+                            { label: "Low",          range: "50 – 79%",  rate: "0.50%",  color: "#854F0B", bg: "#FAEEDA" },
+                            { label: "Medium",       range: "80 – 99%",  rate: "0.80%",  color: "#534AB7", bg: "#EEEDFE" },
+                            { label: "High Jump",    range: "100 – 124%",rate: "1.60%",  color: "#3B6D11", bg: "#EAF3DE" },
+                            { label: "Accelerated",  range: "125 – 199%",rate: "2.00%",  color: "#185FA5", bg: "#E6F1FB" },
+                            { label: "Maximum",      range: "200%+",     rate: "2.50%",  color: "#0F6E56", bg: "#E1F5EE" },
+                          ].map((s, i) => (
+                            <tr key={i} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                              <td style={tdStyle}>
+                                <span style={{ background: s.bg, color: s.color, borderRadius: 5, padding: "2px 8px", fontWeight: 600, fontSize: 11 }}>{s.label}</span>
+                              </td>
+                              <td style={{ ...tdStyle, color: s.color, fontWeight: 500 }}>{s.range}</td>
+                              <td style={{ ...tdStyle, textAlign: "right", color: s.color, fontWeight: 700 }}>{s.rate}</td>
+                              <td style={tdStyle}>
+                                <span style={{ fontSize: 10, color: "#854F0B", background: "#FAEEDA", borderRadius: 4, padding: "2px 7px", fontWeight: 600 }}>
+                                  Pending Budget Sheet
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </main>
+      </div>
     </div>
   );
 }
+
+const thStyle = {
+  padding: "9px 12px",
+  textAlign: "left",
+  fontSize: 11,
+  fontWeight: 600,
+  color: "var(--color-text-secondary)",
+  borderBottom: "0.5px solid var(--color-border-tertiary)",
+  letterSpacing: "0.04em",
+  position: "sticky",
+  top: 0,
+  zIndex: 5,
+  background: "var(--color-background-secondary)"
+};
+
+const tdStyle = {
+  padding: "7px 12px",
+  fontSize: 12,
+  color: "var(--color-text-primary)",
+  borderBottom: "0.5px solid var(--color-border-tertiary)",
+  fontFamily: "'DM Mono', monospace"
+};
+
+const pgBtn = {
+  background: "var(--color-background-secondary)",
+  border: "0.5px solid var(--color-border-secondary)",
+  borderRadius: 6,
+  padding: "5px 10px",
+  fontSize: 13,
+  cursor: "pointer",
+  color: "var(--color-text-primary)"
+};
